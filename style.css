@@ -287,9 +287,7 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
 .prompt-controls-choice:has(input:focus-visible),
 .prompt-controls-switch:has(input:focus-visible) .prompt-controls-switch-track,
 .prompt-controls-variable-summary:focus-visible,
-.prompt-controls-settings-header:focus-visible,
-.prompt-controls-editor-input:not([type="range"]),
-.prompt-controls-editor-input:not([type="range"]):focus-visible {
+.prompt-controls-settings-header:focus-visible {
     outline: 0;
     border: 1px solid var(--upc-border-soft) !important;
 }
@@ -303,7 +301,6 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
 
 .prompt-controls-select,
 .prompt-controls-input:not([type="range"]),
-.prompt-controls-editor-input:not([type="range"]),
 .prompt-controls-editor-select,
 .prompt-controls-editor-textarea {
     box-sizing: border-box;
@@ -316,6 +313,8 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
+
+
 .prompt-controls-select,
 .prompt-controls-input:not([type="range"]),
 .prompt-controls-editor-input:not([type="range"]),
@@ -323,6 +322,16 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     min-height: 40px;
     padding: 8px 11px !important;
     margin-bottom: 0;
+}
+
+.prompt-controls-editor-input:not([type="range"]),
+.prompt-controls-editor-input:not([type="range"]):focus-visible {
+    border: 0 !important;
+    background-color: transparent !important;
+    outline: none !important;
+    box-sizing: border-box;
+    width: 100%;
+    font-size: 14px !important;
 }
 
 .prompt-controls-editor-textarea {
