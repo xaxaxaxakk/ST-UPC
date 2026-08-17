@@ -25,6 +25,11 @@
     * {
         font-family: "Pretendard" !important;
     }
+    :where([class^="fa"], [class*=" fa-"]),
+    :where([class^="fa"], [class*=" fa-"])::before,
+    :where([class*="drawer-icon fa"]) {
+      font-family: "Font Awesome 6 Free", "Font Awesome 6 Brands", "Font Awesome 5 Free", "Font Awesome 5 Pro", FontAwesome !important;
+    }
 }
 
 body.prompt-controls-theme-dark #prompt_controls_runtime_panel,
