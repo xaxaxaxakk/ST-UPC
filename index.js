@@ -109,7 +109,7 @@ function normalizeFavorite(raw) {
     const rawValues = favorite.values && typeof favorite.values === "object" && !Array.isArray(favorite.values) ? favorite.values : {};
     return {
         id: asString(favorite.id, 160) || makeId("favorite"),
-        name: asString(favorite.name, 100) || "즐겨찾기",
+        name: asString(favorite.name, 100) || "프리셋",
         values: Object.fromEntries(Object.entries(rawValues).slice(0, 50)),
     };
 }
@@ -2033,7 +2033,7 @@ function ensureRuntimePanel() {
         </div>
         <div id="prompt_controls_runtime_body" class="prompt-controls-runtime-body"></div>
         <div class="prompt-controls-runtime-footer">
-            <button id="prompt_controls_favorite_manage" type="button" class="prompt-controls-icon-button" title="즐겨찾기 관리"><i class="fa-solid fa-gear"></i></button>
+            <button id="prompt_controls_favorite_manage" type="button" class="prompt-controls-icon-button" title="프리셋 관리"><i class="fa-solid fa-gear"></i></button>
             <div class="prompt-controls-runtime-footer-right">
                 <button id="prompt_controls_reset" type="button" class="prompt-controls-action"><i class="fa-solid fa-arrow-rotate-left"></i></button>
                 <button id="prompt_controls_save_favorite" type="button" class="prompt-controls-action"><i class="fa-solid fa-star"></i></button>
@@ -2054,13 +2054,13 @@ function ensureRuntimePanel() {
     runtimePanel.querySelector('#prompt_controls_save_favorite')?.addEventListener('click', () => {
         if (activeFavoriteId) {
             const favorite = currentDefinition.favorites.find(item => item.id === activeFavoriteId);
-            if (favorite && globalThis.confirm(`“${favorite.name}” 즐겨찾기를 삭제(해제)할까요?`)) {
+            if (favorite && globalThis.confirm(`“${favorite.name}” 프리셋을 삭제(해제)할까요?`)) {
                 deleteFavorite(favorite.id);
             }
             return;
         }
         
-        const favoriteName = globalThis.prompt("즐겨찾기 이름을 입력하세요:");
+        const favoriteName = globalThis.prompt("프리셋 이름을 입력하세요:");
         
         if (favoriteName !== null) {
             saveCurrentValuesAsFavorite(favoriteName);
@@ -2187,7 +2187,7 @@ function renderRuntimeFavorites(body) {
             removeBadge.append(createIcon('fa-xmark'));
             removeBadge.addEventListener('click', event => {
                 event.stopPropagation();
-                if (globalThis.confirm(`“${favorite.name}” 즐겨찾기를 삭제할까요?`)) deleteFavorite(favorite.id);
+                if (globalThis.confirm(`“${favorite.name}” 프리셋을 삭제할까요?`)) deleteFavorite(favorite.id);
             });
             row.append(removeBadge);
         }
@@ -2277,7 +2277,7 @@ function renderRuntimePanel() {
 
 function saveCurrentValuesAsFavorite(name) {
     if (!currentPresetKey || !hasActiveChat()) return;
-    const trimmedName = asString(name, 100).trim() || `즐겨찾기 ${currentDefinition.favorites.length + 1}`;
+    const trimmedName = asString(name, 100).trim() || `프리셋 ${currentDefinition.favorites.length + 1}`;
     const values = Object.fromEntries(
         currentDefinition.variables.map(variable => [variable.id, cloneData(getRawValue(variable))]),
     );
@@ -2286,7 +2286,7 @@ function saveCurrentValuesAsFavorite(name) {
     if (existing) {
         existing.values = values;
         activeFavoriteId = existing.id;
-        notify('success', `“${trimmedName}” 즐겨찾기를 덮어썼습니다.`);
+        notify('success', `“${trimmedName}” 프리셋을 덮어썼습니다.`);
     } else {
         const favorite = { id: makeId('favorite'), name: trimmedName, values };
         currentDefinition.favorites.push(favorite);
@@ -2304,7 +2304,7 @@ function deleteFavorite(favoriteId) {
     if (activeFavoriteId === favoriteId) activeFavoriteId = '';
     renderRuntimePanel();
     persistDefinition({ announce: true });
-    notify('success', `“${removed.name}” 즐겨찾기를 삭제했습니다.`);
+    notify('success', `“${removed.name}” 프리셋을 삭제했습니다.`);
 }
 
 function applyFavorite(favoriteId) {
@@ -2325,7 +2325,7 @@ function applyFavorite(favoriteId) {
     queueNativePromptSync(changed);
     activeFavoriteId = favoriteId;
     renderRuntimePanel();
-    notify("success", `“${favorite.name}” 즐겨찾기를 적용했습니다.`);
+    notify("success", `“${favorite.name}” 프리셋을 적용했습니다.`);
 }
 
 function resetChatValues() {
