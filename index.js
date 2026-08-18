@@ -35,6 +35,9 @@ let runtimePanel = null;
 let runtimeButton = null;
 let leftFormObserver = null;
 let settingsPlacementObserver = null;
+let promptCatalogObserver = null;
+let promptCatalogSyncTimer = null;
+let observedPromptCatalogList = null;
 let reloadTimer = null;
 let nativePromptRenderTimer = null;
 let nativePromptRenderInFlight = false;
@@ -326,18 +329,41 @@ function setRawValue(variable, value) {
     return true;
 }
 
+function substituteBasicMacros(text) {
+    if (typeof text !== 'string' || !text) return text;
+    const context = getContext();
+    if (typeof context?.substituteParams === 'function') {
+        return context.substituteParams(text);
+    }
+    const userName = context?.name1 ?? '';
+    const charName = context?.name2 ?? '';
+    const groupNames = context?.groups?.find?.(g => g.id === context?.groupId)?.members
+        ?.map(member => context?.characters?.find?.(c => c.avatar === member)?.name)
+        ?.filter(Boolean)
+        ?.join(', ') ?? charName;
+    return text
+        .replace(/\{\{user\}\}/gi, userName)
+        .replace(/\{\{char\}\}/gi, charName)
+        .replace(/\{\{group\}\}/gi, groupNames);
+}
+
 function resolveVariable(variable) {
     if (variable.promptToggleMode) return '';
     const raw = getRawValue(variable);
+    let result;
     if (variable.type === 'multi') {
-        return raw
+        result = raw
             .map(id => variable.options.find(option => option.id === id)?.value ?? '')
             .filter(Boolean)
             .join(variable.separator);
+    } else if (variable.type === 'toggle') {
+        result = raw ? variable.onValue : variable.offValue;
+    } else if (variable.type === 'input') {
+        result = raw;
+    } else {
+        result = variable.options.find(option => option.id === raw)?.value ?? '';
     }
-    if (variable.type === 'toggle') return raw ? variable.onValue : variable.offValue;
-    if (variable.type === 'input') return raw;
-    return variable.options.find(option => option.id === raw)?.value ?? '';
+    return substituteBasicMacros(result);
 }
 
 function getVariableMacroLabel(variable) {
@@ -844,15 +870,31 @@ async function copyDefinitionToPreset() {
     if (currentDefinition.variables.length > 0
         && !globalThis.confirm(`현재 프롬프트 “${currentPresetName}”의 기존 변수 ${currentDefinition.variables.length}개를 “${sourceName}”의 설정으로 덮어쓸까요?`)) return;
 
+    const targetCatalogIds = new Set(getNativePromptCatalog().map(prompt => prompt.identifier));
+    const sourceVariables = sourceDefinition.variables;
+    const filteredVariables = sourceVariables.filter(variable => {
+        if (!variable.promptToggleMode) return true;
+        return variable.promptOptions.length > 0
+            && variable.promptOptions.every(option => targetCatalogIds.has(option.promptIdentifier));
+    });
+    const skippedCount = sourceVariables.length - filteredVariables.length;
+
+    if (filteredVariables.length === 0) {
+        notify('error', `“${sourceName}”의 변수는 현재 프롬프트와 토글 구성이 일치하지 않아 복사할 수 없습니다.`);
+        return;
+    }
+
     try {
-        currentDefinition = normalizeDefinition(cloneData(sourceDefinition));
+        currentDefinition = normalizeDefinition(cloneData({ ...sourceDefinition, variables: filteredVariables }));
         expandedVariableIds.clear();
         refreshMacros();
         renderSettingsEditor();
         renderRuntimePanel();
         updateRuntimeButton();
         await persistDefinition();
-        notify('success', `“${sourceName}” 프롬프트의 변수 설정을 가져왔습니다.`);
+        notify('success', skippedCount > 0
+            ? `“${sourceName}” 프롬프트의 변수 설정을 가져왔습니다. (토글 구성이 다른 변수 ${skippedCount}개 제외됨)`
+            : `“${sourceName}” 프롬프트의 변수 설정을 가져왔습니다.`);
     } catch (error) {
         console.error('[User Preset Custom] Could not import definition from preset.', error);
         notify('error', '프롬프트 간 변수 정의를 가져오지 못했습니다.');
@@ -882,6 +924,7 @@ function loadCurrentPreset() {
     }
 
     refreshMacros();
+    ensurePromptCatalogObserver();
     renderSettingsEditor();
     renderRuntimePanel();
     updateRuntimeButton();
@@ -946,6 +989,7 @@ function createVariable() {
     currentDefinition.variables.push(variable);
     expandedVariableIds.add(variable.id);
     refreshMacros();
+    ensurePromptCatalogObserver(); // reattach if the prompt list wasn't ready yet or ST swapped the node
     renderSettingsEditor();
     renderRuntimePanel();
     updateRuntimeButton();
@@ -1028,6 +1072,129 @@ function createActionButton(text, onClick, extraClass = '', iconClass = '') {
     button.addEventListener('click', onClick);
     return button;
 }
+const DRAG_SHIELD_EVENTS = ['pointerdown', 'mousedown', 'touchstart', 'click'];
+
+function shieldPointerDown(event) {
+    event.stopPropagation();
+}
+
+function installDragShield() {
+    for (const type of DRAG_SHIELD_EVENTS) {
+        document.addEventListener(type, shieldPointerDown, true);
+    }
+}
+
+function removeDragShield() {
+    setTimeout(() => {
+        for (const type of DRAG_SHIELD_EVENTS) {
+            document.removeEventListener(type, shieldPointerDown, true);
+        }
+    }, 0);
+}
+
+function attachDragReorder(listEl, items, rowSelector, onReorder) {
+    let dragRow = null;
+    let placeholder = null;
+    let handleEl = null;
+    let pointerId = null;
+    let startY = 0;
+    let baseTop = 0;
+    let startIndex = -1;
+    const rows = () => [...listEl.children];
+
+    function onPointerMove(event) {
+        if (!dragRow || (pointerId !== null && event.pointerId !== pointerId)) return;
+        dragRow.style.top = `${baseTop + (event.clientY - startY)}px`;
+        const placeholderIndex = rows().indexOf(placeholder);
+        for (const row of rows()) {
+            if (row === placeholder) continue;
+            const rect = row.getBoundingClientRect();
+            const mid = rect.top + rect.height / 2;
+            const rowIndex = rows().indexOf(row);
+            if (event.clientY < mid && rowIndex < placeholderIndex) { row.before(placeholder); break; }
+            if (event.clientY > mid && rowIndex > placeholderIndex) { row.after(placeholder); break; }
+        }
+    }
+
+    function endDrag() {
+        if (!dragRow) return -1;
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+        document.removeEventListener('pointercancel', onPointerCancel);
+        if (handleEl && pointerId !== null && handleEl.releasePointerCapture) {
+            try { handleEl.releasePointerCapture(pointerId); } catch { /* already released */ }
+        }
+        dragRow.classList.remove('prompt-controls-drag-active');
+        dragRow.style.cssText = '';
+        placeholder.replaceWith(dragRow);
+        const endIndex = rows().indexOf(dragRow);
+        placeholder = null;
+        dragRow = null;
+        handleEl = null;
+        pointerId = null;
+        removeDragShield();
+        return endIndex;
+    }
+
+    function onPointerUp(event) {
+        if (pointerId !== null && event.pointerId !== pointerId) return;
+        const endIndex = endDrag();
+        if (endIndex !== -1 && endIndex !== startIndex) {
+            const [moved] = items.splice(startIndex, 1);
+            items.splice(endIndex, 0, moved);
+            onReorder();
+        }
+    }
+
+    function onPointerCancel(event) {
+        if (pointerId !== null && event.pointerId !== pointerId) return;
+        endDrag();
+    }
+
+    listEl.addEventListener('pointerdown', event => {
+        const handle = event.target.closest('.prompt-controls-drag-handle');
+        const row = handle?.closest(rowSelector);
+        if (!row) return;
+        event.preventDefault();
+
+        installDragShield();
+
+        const rect = row.getBoundingClientRect();
+        dragRow = row;
+        handleEl = handle;
+        pointerId = event.pointerId;
+        startY = event.clientY;
+        baseTop = rect.top;
+        startIndex = rows().indexOf(row);
+
+        placeholder = document.createElement('div');
+        placeholder.className = 'prompt-controls-drag-placeholder';
+        placeholder.style.height = `${rect.height}px`;
+        row.replaceWith(placeholder);
+
+        const dragHost = listEl.closest('#left-nav-panel') ?? document.body;
+        dragHost.append(dragRow);
+        dragRow.classList.add('prompt-controls-drag-active');
+        Object.assign(dragRow.style, {
+            position: 'fixed',
+            top: `${rect.top}px`,
+            left: `${rect.left}px`,
+            width: `${rect.width}px`,
+            margin: '0',
+            zIndex: '1000',
+            pointerEvents: 'none',
+            touchAction: 'none',
+        });
+
+        if (handle.setPointerCapture) {
+            try { handle.setPointerCapture(pointerId); } catch { /* not capturable, fine */ }
+        }
+
+        document.addEventListener('pointermove', onPointerMove);
+        document.addEventListener('pointerup', onPointerUp);
+        document.addEventListener('pointercancel', onPointerCancel);
+    });
+}
 
 function renderSelectionEditor(variable, body) {
     const section = createEditorSection(
@@ -1101,8 +1268,9 @@ function renderSelectionEditor(variable, body) {
         const header = document.createElement('div');
         header.className = 'prompt-controls-option-row-header';
         const index = document.createElement('span');
-        index.className = 'prompt-controls-option-index';
-        index.append(createIcon('fa-grip-lines'));
+        index.className = 'prompt-controls-option-index prompt-controls-drag-handle';
+        index.style.touchAction = 'none';
+        index.append(createIcon('fa-grip-vertical'));
         const indexText = document.createElement('span');
         indexText.textContent = String(optionIndex + 1).padStart(2, '0');
         index.append(indexText);
@@ -1116,6 +1284,12 @@ function renderSelectionEditor(variable, body) {
         valueField.append(valueIcon, valueInput);
         row.append(header, valueField);
         list.append(row);
+    });
+
+    attachDragReorder(list, variable.options, '.prompt-controls-option-row', () => {
+        renderSettingsEditor();
+        renderRuntimePanel();
+        persistDefinition();
     });
 
     const addOption = createActionButton('선택지 추가', () => {
@@ -1165,6 +1339,10 @@ function renderPromptToggleEditor(variable, body) {
         const row = document.createElement('div');
         row.className = 'prompt-controls-prompt-option-row';
         row.dataset.promptIdentifier = option.promptIdentifier;
+        const handle = document.createElement('span');
+        handle.className = 'prompt-controls-option-index prompt-controls-drag-handle';
+        handle.style.touchAction = 'none';
+        handle.append(createIcon('fa-grip-vertical'));
         const icon = document.createElement('span');
         icon.className = `prompt-controls-prompt-state-icon${prompt?.enabled ? ' prompt-controls-prompt-state-icon-on' : ''}`;
         icon.append(createIcon(prompt?.enabled ? 'fa-toggle-on' : 'fa-toggle-off'));
@@ -1211,9 +1389,16 @@ function renderPromptToggleEditor(variable, body) {
             queueNativePromptSync([variable]);
             persistDefinition();
         }, 'prompt-controls-action-danger prompt-controls-prompt-option-remove', 'fa-xmark');
-        row.append(icon, copy, defaultLabel, remove);
+        row.append(handle, icon, copy, defaultLabel, remove);
         list.append(row);
     }
+
+    attachDragReorder(list, variable.promptOptions, '.prompt-controls-prompt-option-row', () => {
+        renderSettingsEditor();
+        renderRuntimePanel();
+        queueNativePromptSync([variable]);
+        persistDefinition();
+    });
 
     const picker = document.createElement('div');
     picker.className = 'prompt-controls-prompt-picker';
@@ -1387,9 +1572,16 @@ function renderVariableCard(variable) {
 
     const summary = document.createElement('summary');
     summary.className = 'prompt-controls-variable-summary';
+    const dragHandle = document.createElement('span');
+    dragHandle.className = 'prompt-controls-variable-drag-handle prompt-controls-drag-handle';
+    dragHandle.style.touchAction = 'none';
+    dragHandle.append(createIcon('fa-grip-vertical'));
+    dragHandle.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
     const leading = document.createElement('span');
     leading.className = 'prompt-controls-variable-leading-icon';
-    leading.append(createIcon('fa-hashtag'));
     const heading = document.createElement('span');
     heading.className = 'prompt-controls-variable-heading';
     const label = document.createElement('span');
@@ -1422,7 +1614,7 @@ function renderVariableCard(variable) {
     const chevron = document.createElement('span');
     chevron.className = 'prompt-controls-variable-chevron';
     chevron.append(createIcon('fa-chevron-right'));
-    summary.append(leading, heading, type, pin, chevron);
+    summary.append(dragHandle, leading, heading, type, pin, chevron);
 
     const body = document.createElement('div');
     body.className = 'prompt-controls-variable-body';
@@ -1659,6 +1851,42 @@ function ensureSettingsPlacementObserver() {
     settingsPlacementObserver.observe(document.body, { childList: true, subtree: true });
 }
 
+function syncPromptToggleLabels() {
+    const catalog = getNativePromptCatalog();
+    if (catalog.length === 0) return false;
+    const catalogById = new Map(catalog.map(prompt => [prompt.identifier, prompt]));
+    let changed = false;
+    for (const variable of currentDefinition.variables) {
+        if (!variable.promptToggleMode) continue;
+        for (const option of variable.promptOptions) {
+            const liveName = catalogById.get(option.promptIdentifier)?.name;
+            if (liveName && liveName !== option.label) {
+                option.label = liveName;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+function ensurePromptCatalogObserver() {
+    const list = document.getElementById('completion_prompt_manager_list');
+    if (!list) return;
+    if (promptCatalogObserver && observedPromptCatalogList === list && list.isConnected) return;
+    promptCatalogObserver?.disconnect();
+    observedPromptCatalogList = list;
+    promptCatalogObserver = new MutationObserver(() => {
+        clearTimeout(promptCatalogSyncTimer);
+        promptCatalogSyncTimer = setTimeout(() => {
+            if (!syncPromptToggleLabels()) return;
+            renderSettingsEditor();
+            renderRuntimePanel();
+            persistDefinition();
+        }, 120);
+    });
+    promptCatalogObserver.observe(list, { childList: true, subtree: true, characterData: true });
+}
+
 function renderSettingsWarnings() {
     const target = document.getElementById('prompt_controls_settings_warnings');
     if (!target) return;
@@ -1724,6 +1952,14 @@ function renderSettingsEditor() {
         list.append(empty);
     } else {
         currentDefinition.variables.forEach(variable => list.append(renderVariableCard(variable)));
+    }
+    if (!list.dataset.dragReorderAttached) {
+        list.dataset.dragReorderAttached = 'true';
+        attachDragReorder(list, currentDefinition.variables, '.prompt-controls-variable-card', () => {
+            renderSettingsEditor();
+            renderRuntimePanel();
+            persistDefinition();
+        });
     }
     setSaveStatus(`“${currentPresetName}” 프롬프트에서 불러옴`);
 }
@@ -2046,6 +2282,7 @@ function initialize() {
     ensureRuntimePanel();
     ensureRuntimeButton();
     ensureSettingsPlacementObserver();
+    ensurePromptCatalogObserver();
     ensureSettingsUI();
     applyTheme(getStoredTheme());
 
@@ -2085,6 +2322,10 @@ function cleanup() {
     leftFormObserver = null;
     settingsPlacementObserver?.disconnect();
     settingsPlacementObserver = null;
+    promptCatalogObserver?.disconnect();
+    promptCatalogObserver = null;
+    observedPromptCatalogList = null;
+    clearTimeout(promptCatalogSyncTimer);
     const context = getContext();
     for (const { type, handler } of stEventBindings.splice(0)) {
         context?.eventSource?.removeListener?.(type, handler);
