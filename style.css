@@ -658,12 +658,51 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    position: relative;
 }
-.prompt-controls-transfer-actions .prompt-controls-editor-select {
+
+.prompt-controls-transfer-actions #prompt_controls_copy_target_wrap {
     width: calc(100% - 120px);
+}
+#prompt_controls_copy_target_wrap .prompt-controls-editor-select {
+    width: 100% !important;
+    margin: 0 !important;
+}
+.prompt-controls-transfer-panel .prompt-controls-prompt-picker-list {
+    width: 100%;
+    position: absolute;
+    background-color: var(--upc-surface);
+    box-shadow: var(--upc-shadow-sm) !important;
+    border: 1px solid var(--upc-border-soft);
+    border-radius: 8px;
+    z-index: 9;
 }
 .prompt-controls-transfer-actions #prompt_controls_copy {
     margin-left: auto;
+}
+
+.prompt-controls-searchable-select-field {
+    position: relative;
+}
+.prompt-controls-searchable-select-field input {
+    padding-right: 24px;
+    &:focus {
+        outline: none !important;
+    }
+}
+.prompt-controls-searchable-select-clear {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    opacity: 0.6;
+}
+.prompt-controls-searchable-select-clear:hover {
+    opacity: 1;
 }
 
 .prompt-controls-warning {
@@ -1225,6 +1264,7 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
 .prompt-controls-prompt-search input {
     flex: 1 1 auto;
     min-width: 0;
+    margin-right: 20px;
     min-height: var(--el-size);
     padding: 0 !important;
     border: 0 !important;
@@ -1241,16 +1281,22 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     padding: 4px 6px;
     overflow-y: auto;
 }
+.prompt-controls-prompt-picker-list[hidden] {
+    display: none;
+}
 
 .prompt-controls-prompt-picker-row {
-    display: grid;
-    grid-template-columns: 18px 8px minmax(0, 1fr);
-    align-items: center;
+    display: block;
+    width: 100%;
+    padding: 0.6rem 1rem;
+    font-size: 13px !important;
     gap: 8px;
-    min-height: 40px;
-    padding: 6px 10px;
     border-radius: 8px;
-    cursor: pointer;
+    cursor: pointer;   
+}
+
+.prompt-controls-prompt-picker-row[hidden] {
+    display: none;
 }
 
 .prompt-controls-prompt-picker-row:hover,
@@ -1297,9 +1343,6 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     font-weight: 600;
     font-size: 0.7rem;
     background: var(--upc-surface-soft);
-}
-.prompt-controls-prompt-picker-row[hidden] {
-    display: none;
 }
 
 .prompt-controls-default-picker {

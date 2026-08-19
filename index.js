@@ -854,8 +854,8 @@ async function importDefinitionFile(file) {
 }
 
 async function copyDefinitionToPreset() {
-    const select = document.getElementById("prompt_controls_copy_target");
-    const sourceName = select?.value ?? "";
+    const wrap = document.getElementById("prompt_controls_copy_target_wrap");
+    const sourceName = wrap?.dataset.value ?? "";
     const info = getPresetInfo();
     if (!info || !sourceName || sourceName === currentPresetName) return;
 
@@ -1842,7 +1842,14 @@ function ensureSettingsUI() {
                         <span><strong>유저 설정 관리</strong><small>프롬프트 변수 설정 복사 · 관리</small></span>
                     </div>
                     <div class="prompt-controls-transfer-actions">
-                        <select id="prompt_controls_copy_target" class="prompt-controls-editor-select" aria-label="복사해올 대상 프롬프트"></select>
+                        <div id="prompt_controls_copy_target_wrap" class="prompt-controls-searchable-select">
+                            <label class="prompt-controls-prompt-search prompt-controls-editor-select prompt-controls-searchable-select-field">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <input id="prompt_controls_copy_target_search" type="text" placeholder="복사해올 프롬프트 선택" autocomplete="off">
+                                <button type="button" id="prompt_controls_copy_target_clear" class="prompt-controls-searchable-select-clear" tabindex="-1" hidden><i class="fa-solid fa-xmark"></i></button>
+                            </label>
+                            <div id="prompt_controls_copy_target_list" class="prompt-controls-prompt-picker-list prompt-controls-searchable-select-list" hidden></div>
+                        </div>
                         <button id="prompt_controls_copy" type="button" class="prompt-controls-action"><i class="fa-solid fa-copy"></i></button>
                         <button id="prompt_controls_import" type="button" class="prompt-controls-action prompt-controls-action-primary"><i class="fa-solid fa-file-import"></i></button>
                         <button id="prompt_controls_export" type="button" class="prompt-controls-action"><i class="fa-solid fa-file-export"></i></button>                        
@@ -1860,6 +1867,38 @@ function ensureSettingsUI() {
     settingsContainer.querySelector("#prompt_controls_theme_toggle")?.addEventListener("click", toggleTheme);
     settingsContainer.querySelector("#prompt_controls_add")?.addEventListener("click", createVariable);
     settingsContainer.querySelector("#prompt_controls_copy")?.addEventListener("click", copyDefinitionToPreset);
+    settingsContainer.querySelector("#prompt_controls_copy_target_search")?.addEventListener("focus", () => {
+    settingsContainer.querySelector("#prompt_controls_copy_target_list")?.removeAttribute("hidden");
+    });
+    settingsContainer.querySelector("#prompt_controls_copy_target_list")?.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+    });
+    document.addEventListener("click", (event) => {
+        const wrap = settingsContainer?.querySelector("#prompt_controls_copy_target_wrap");
+        if (wrap && !wrap.contains(event.target)) wrap.querySelector("#prompt_controls_copy_target_list")?.setAttribute("hidden", "");
+    });
+    settingsContainer.querySelector("#prompt_controls_copy_target_wrap")?.addEventListener("focusout", (event) => {
+        const wrap = event.currentTarget;
+        setTimeout(() => {
+            if (!wrap.contains(document.activeElement)) {
+                wrap.querySelector("#prompt_controls_copy_target_list")?.setAttribute("hidden", "");
+            }
+        }, 0);
+    });
+    settingsContainer.querySelector("#prompt_controls_copy_target_clear")?.addEventListener("click", () => {
+        const wrap = settingsContainer.querySelector("#prompt_controls_copy_target_wrap");
+        const search = settingsContainer.querySelector("#prompt_controls_copy_target_search");
+        const listEl = settingsContainer.querySelector("#prompt_controls_copy_target_list");
+        const clearBtn = settingsContainer.querySelector("#prompt_controls_copy_target_clear");
+        const copyBtn = settingsContainer.querySelector("#prompt_controls_copy");
+        if (!wrap || !search) return;
+        search.value = "";
+        wrap.dataset.value = "";
+        if (copyBtn) copyBtn.disabled = true;
+        clearBtn.hidden = true;
+        listEl.hidden = true;
+        search.focus();
+    });
     settingsContainer.querySelector("#prompt_controls_export")?.addEventListener("click", exportCurrentDefinition);
     settingsContainer.querySelector("#prompt_controls_import")?.addEventListener("click", () => {
         settingsContainer.querySelector("#prompt_controls_import_file")?.click();
@@ -1938,7 +1977,10 @@ function renderSettingsEditor() {
     if (!container) return;
     const preset = container.querySelector("#prompt_controls_settings_preset");
     const addButton = container.querySelector("#prompt_controls_add");
-    const copyTarget = container.querySelector("#prompt_controls_copy_target");
+    const copyTargetWrap = container.querySelector("#prompt_controls_copy_target_wrap");
+    const copyTargetSearch = container.querySelector("#prompt_controls_copy_target_search");
+    const copyTargetList = container.querySelector("#prompt_controls_copy_target_list");
+    const copyTargetClear = container.querySelector("#prompt_controls_copy_target_clear");
     const copyButton = container.querySelector("#prompt_controls_copy");
     const exportButton = container.querySelector("#prompt_controls_export");
     const importButton = container.querySelector("#prompt_controls_import");
@@ -1948,24 +1990,44 @@ function renderSettingsEditor() {
     if (addButton) addButton.disabled = !currentPresetKey;
     if (exportButton) exportButton.disabled = !currentPresetKey;
     if (importButton) importButton.disabled = !currentPresetKey;
-    if (copyTarget) {
-        copyTarget.replaceChildren();
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = "복사해올 프롬프트 선택";
-        copyTarget.append(placeholder);
+    if (copyTargetWrap && copyTargetSearch && copyTargetList) {
         const info = getPresetInfo();
-        const names = info?.manager?.getAllPresets?.() ?? [];
-        for (const name of names.filter((name) => name !== currentPresetName)) {
-            const option = document.createElement("option");
-            option.value = name;
-            option.textContent = name;
-            copyTarget.append(option);
+        const names = (info?.manager?.getAllPresets?.() ?? []).filter((name) => name !== currentPresetName);
+        const disabled = !currentPresetKey || names.length === 0;
+
+        copyTargetWrap.dataset.value = "";
+        copyTargetSearch.value = "";
+        copyTargetSearch.disabled = disabled;
+        copyTargetSearch.placeholder = disabled ? "복사해올 프롬프트 없음" : "복사해올 프롬프트 선택";
+        if (copyButton) copyButton.disabled = true;
+        if (copyTargetClear) copyTargetClear.hidden = true;
+
+        copyTargetList.replaceChildren();
+        copyTargetList.hidden = true;
+        const rows = [];
+        for (const name of names) {
+            const row = document.createElement("div");
+            row.className = "prompt-controls-prompt-picker-row";
+            row.dataset.search = name.toLocaleLowerCase();
+            row.textContent = name;
+            row.addEventListener("click", () => {
+                copyTargetWrap.dataset.value = name;
+                copyTargetSearch.value = name;
+                copyTargetList.hidden = true;
+                if (copyButton) copyButton.disabled = false;
+                if (copyTargetClear) copyTargetClear.hidden = false;
+            });
+            rows.push(row);
+            copyTargetList.append(row);
         }
-        copyTarget.disabled = !currentPresetKey || names.length < 2;
-        if (copyButton) copyButton.disabled = copyTarget.disabled || !copyTarget.value;
-        copyTarget.onchange = () => {
-            if (copyButton) copyButton.disabled = !copyTarget.value;
+
+        copyTargetSearch.oninput = () => {
+            copyTargetWrap.dataset.value = "";
+            if (copyButton) copyButton.disabled = true;
+            const query = copyTargetSearch.value.trim().toLocaleLowerCase();
+            for (const row of rows) row.hidden = Boolean(query) && !row.dataset.search.includes(query);
+            copyTargetList.hidden = false;
+            if (copyTargetClear) copyTargetClear.hidden = copyTargetSearch.value.length === 0;
         };
     }
     list.replaceChildren();
