@@ -1387,6 +1387,10 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
     overflow-x: auto !important;
     overflow-y: hidden !important;
     padding: 6px 4px 6px 0;
+
+    &:empty {
+        display: none
+    }
 }
 .prompt-controls-runtime-favorites::-webkit-scrollbar {
     height: 15px !important;
