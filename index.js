@@ -7,7 +7,7 @@ const SETTINGS_ID = "prompt_controls_settings";
 const SETTINGS_ANCHOR_ID = "completion_prompt_manager";
 const VARIABLE_TYPES = new Set(["dropdown", "single", "multi", "toggle", "input"]);
 const THEME_STORAGE_KEY = "promptControlsCustomTheme";
-const THEME_BODY_CLASS = "prompt-controls-theme-dark";
+const THEME_BODY_CLASS = "sb-theme-dark";
 const MACRO_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const TYPE_LABELS = {
     dropdown: "드롭다운",
@@ -65,9 +65,9 @@ function getEventTypes(context = getContext()) {
 function notify(kind, message) {
     const notifier = globalThis.toastr?.[kind];
     if (typeof notifier === "function") {
-        notifier(message, "User Preset Custom");
+        notifier(message, "Switch Binder");
     } else {
-        console[kind === "error" ? "error" : "log"](`[User Preset Custom] ${message}`);
+        console[kind === "error" ? "error" : "log"](`[Switch Binder] ${message}`);
     }
 }
 
@@ -289,7 +289,7 @@ function saveChatMetadata() {
         return;
     }
     Promise.resolve(context?.saveMetadata?.()).catch((error) => {
-        console.error("[User Preset Custom] Could not save chat metadata.", error);
+        console.error("[Switch Binder] Could not save chat metadata.", error);
         notify("error", "채팅별 변수 값을 저장하지 못했습니다.");
     });
 }
@@ -407,7 +407,7 @@ function restoreSetvarBindings() {
             else delete state.store[key];
         }
     } catch (error) {
-        console.warn("[User Preset Custom] Could not restore protected local variables.", error);
+        console.warn("[Switch Binder] Could not restore protected local variables.", error);
     }
 }
 
@@ -426,19 +426,19 @@ function refreshSetvarBindings() {
     const store = metadata.variables;
     const toJSONDescriptor = Object.getOwnPropertyDescriptor(store, "toJSON");
     if (toJSONDescriptor && !toJSONDescriptor.configurable) {
-        console.warn("[User Preset Custom] Local variables have a non-configurable toJSON property; setvar mode was not applied.");
+        console.warn("[Switch Binder] Local variables have a non-configurable toJSON property; setvar mode was not applied.");
         return;
     }
 
     const records = new Map();
     for (const variable of protectedVariables) {
         if (variable.key === "toJSON") {
-            console.warn('[User Preset Custom] The exact variable name "toJSON" cannot use setvar mode.');
+            console.warn('[Switch Binder] The exact variable name "toJSON" cannot use setvar mode.');
             continue;
         }
         const descriptor = Object.getOwnPropertyDescriptor(store, variable.key);
         if (descriptor && !descriptor.configurable) {
-            console.warn(`[User Preset Custom] Could not protect local variable ${variable.key}.`);
+            console.warn(`[Switch Binder] Could not protect local variable ${variable.key}.`);
             continue;
         }
         let originalValue;
@@ -556,15 +556,15 @@ function reflectNativePromptState(identifier, enabled) {
 
 function reflectSettingsPromptState(identifier, enabled) {
     if (!settingsContainer?.isConnected) return;
-    const rows = settingsContainer.querySelectorAll(".prompt-controls-prompt-option-row[data-prompt-identifier]");
+    const rows = settingsContainer.querySelectorAll(".sb-prompt-option-row[data-prompt-identifier]");
     for (const row of rows) {
         if (row.dataset.promptIdentifier !== identifier) continue;
-        const state = row.querySelector(".prompt-controls-prompt-state-icon");
-        state?.classList.toggle("prompt-controls-prompt-state-icon-on", enabled);
+        const state = row.querySelector(".sb-prompt-state-icon");
+        state?.classList.toggle("sb-prompt-state-icon-on", enabled);
         const icon = state?.querySelector("i");
         icon?.classList.toggle("fa-toggle-on", enabled);
         icon?.classList.toggle("fa-toggle-off", !enabled);
-        const meta = row.querySelector(".prompt-controls-prompt-state-text");
+        const meta = row.querySelector(".sb-prompt-state-text");
         if (meta) meta.textContent = enabled ? "현재 ON" : "현재 OFF";
     }
 }
@@ -587,7 +587,7 @@ function scheduleNativePromptRender() {
             })
             .catch((error) => {
                 nativePromptRenderInFlight = false;
-                console.error("[User Preset Custom] Could not refresh the prompt manager.", error);
+                console.error("[Switch Binder] Could not refresh the prompt manager.", error);
                 notify("error", "Prompt List를 새로 계산하지 못했습니다.");
                 if (nativePromptRenderPending) scheduleNativePromptRender();
             });
@@ -640,7 +640,7 @@ function unregisterMacros() {
                 context?.macros?.registry?.unregisterMacro?.(name);
             }
         } catch (error) {
-            console.warn(`[User Preset Custom] Could not unregister macro ${name}.`, error);
+            console.warn(`[Switch Binder] Could not unregister macro ${name}.`, error);
         }
     }
     registeredMacroNames = new Set();
@@ -671,7 +671,7 @@ function refreshMacros() {
             if (usesNewMacroEngine && context.macros?.register) {
                 const result = context.macros.register(name, {
                     category: "prompt-controls",
-                    description: `User Preset Custom variable: ${variable.label}`,
+                    description: `Switch Binder variable: ${variable.label}`,
                     returns: `Current value of {{${name}}}`,
                     handler,
                 });
@@ -680,11 +680,11 @@ function refreshMacros() {
                     continue;
                 }
             } else if (context.registerMacro) {
-                context.registerMacro(name, handler, `User Preset Custom variable: ${variable.label}`);
+                context.registerMacro(name, handler, `Switch Binder variable: ${variable.label}`);
             } else if (context.macros?.register) {
                 const result = context.macros.register(name, {
                     category: "prompt-controls",
-                    description: `User Preset Custom variable: ${variable.label}`,
+                    description: `Switch Binder variable: ${variable.label}`,
                     returns: `Current value of {{${name}}}`,
                     handler,
                 });
@@ -698,7 +698,7 @@ function refreshMacros() {
             }
             registeredMacroNames.add(name);
         } catch (error) {
-            console.error(`[User Preset Custom] Could not register macro ${name}.`, error);
+            console.error(`[Switch Binder] Could not register macro ${name}.`, error);
             macroWarnings.push(`{{${name}}} 변수를 등록하지 못했습니다.`);
         }
     }
@@ -731,7 +731,7 @@ function persistDefinition({announce = false} = {}) {
             }
         })
         .catch((error) => {
-            console.error("[User Preset Custom] Could not save preset definition.", error);
+            console.error("[Switch Binder] Could not save preset definition.", error);
             if (currentPresetKey === presetKeyAtRequest) setSaveStatus("저장 실패");
             notify("error", "현재 프롬프트에 변수 설정을 저장하지 못했습니다.");
         });
@@ -848,10 +848,10 @@ async function importDefinitionFile(file) {
         await persistDefinition();
         notify("success", result.warnings.length ? `가져오기 완료 · ${result.warnings.length}개 경고 확인 필요` : "변수 정의를 검증하고 가져왔습니다.");
     } catch (error) {
-        console.error("[User Preset Custom] Could not import definition.", error);
+        console.error("[Switch Binder] Could not import definition.", error);
         importWarnings = ["JSON 파일을 읽거나 해석하지 못했습니다."];
         renderSettingsWarnings();
-        notify("error", "올바른 User Preset Custom JSON 파일이 아닙니다.");
+        notify("error", "올바른 Switch Binder JSON 파일이 아닙니다.");
     }
 }
 
@@ -865,7 +865,7 @@ async function copyDefinitionToPreset() {
     try {
         sourceDefinition = normalizeDefinition(info.manager.readPresetExtensionField({name: sourceName, path: MODULE_NAME}));
     } catch (error) {
-        console.error("[User Preset Custom] Could not read source preset definition.", error);
+        console.error("[Switch Binder] Could not read source preset definition.", error);
         notify("error", "선택한 프롬프트의 변수 설정을 읽지 못했습니다.");
         return;
     }
@@ -900,7 +900,7 @@ async function copyDefinitionToPreset() {
         await persistDefinition();
         notify("success", skippedCount > 0 ? `“${sourceName}” 프롬프트의 변수 설정을 가져왔습니다. (토글 구성이 다른 변수 ${skippedCount}개 제외됨)` : `“${sourceName}” 프롬프트의 변수 설정을 가져왔습니다.`);
     } catch (error) {
-        console.error("[User Preset Custom] Could not import definition from preset.", error);
+        console.error("[Switch Binder] Could not import definition from preset.", error);
         notify("error", "프롬프트 간 변수 정의를 가져오지 못했습니다.");
     }
 }
@@ -921,7 +921,7 @@ function loadCurrentPreset() {
         try {
             raw = info.manager.readPresetExtensionField({path: MODULE_NAME});
         } catch (error) {
-            console.error("[User Preset Custom] Could not read preset definition.", error);
+            console.error("[Switch Binder] Could not read preset definition.", error);
             notify("error", "현재 프롬프트의 변수 설정을 읽지 못했습니다.");
         }
         if (revision !== loadRevision) return;
@@ -1013,7 +1013,7 @@ function createIcon(iconClass) {
 
 function createLabeledField(labelText, control, iconClass = "") {
     const wrapper = document.createElement("div");
-    wrapper.className = "prompt-controls-editor-field";
+    wrapper.className = "sb-editor-field";
     const label = document.createElement("label");
     if (iconClass) label.append(createIcon(iconClass));
     const text = document.createElement("span");
@@ -1025,21 +1025,21 @@ function createLabeledField(labelText, control, iconClass = "") {
 
 function createEditorSection(iconClass, titleText, description = "") {
     const section = document.createElement("section");
-    section.className = "prompt-controls-card-section";
+    section.className = "sb-card-section";
     const header = document.createElement("div");
-    header.className = "prompt-controls-card-section-header";
+    header.className = "sb-card-section-header";
     const icon = document.createElement("span");
-    icon.className = "prompt-controls-card-section-icon";
+    icon.className = "sb-card-section-icon";
     icon.append(createIcon(iconClass));
     const copy = document.createElement("div");
-    copy.className = "prompt-controls-card-section-copy";
+    copy.className = "sb-card-section-copy";
     const title = document.createElement("div");
-    title.className = "prompt-controls-card-section-title";
+    title.className = "sb-card-section-title";
     title.textContent = titleText;
     copy.append(title);
     if (description) {
         const descriptionElement = document.createElement("div");
-        descriptionElement.className = "prompt-controls-card-section-description";
+        descriptionElement.className = "sb-card-section-description";
         descriptionElement.textContent = description;
         copy.append(descriptionElement);
     }
@@ -1048,7 +1048,7 @@ function createEditorSection(iconClass, titleText, description = "") {
     return section;
 }
 
-function createTextInput(value, {placeholder = "", className = "prompt-controls-editor-input"} = {}) {
+function createTextInput(value, {placeholder = "", className = "sb-editor-input"} = {}) {
     const input = document.createElement("input");
     input.type = "text";
     input.className = className;
@@ -1059,7 +1059,7 @@ function createTextInput(value, {placeholder = "", className = "prompt-controls-
 
 function createTextarea(value, placeholder = "") {
     const textarea = document.createElement("textarea");
-    textarea.className = "prompt-controls-editor-textarea";
+    textarea.className = "sb-editor-textarea";
     textarea.value = value;
     textarea.placeholder = placeholder;
     return textarea;
@@ -1068,7 +1068,7 @@ function createTextarea(value, placeholder = "") {
 function createActionButton(text, onClick, extraClass = "", iconClass = "") {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `prompt-controls-action ${extraClass}`.trim();
+    button.className = `sb-action ${extraClass}`.trim();
     if (iconClass) button.append(createIcon(iconClass));
     const label = document.createElement("span");
     label.textContent = text;
@@ -1138,7 +1138,7 @@ function attachDragReorder(listEl, items, rowSelector, onReorder) {
                 /* already released */
             }
         }
-        dragRow.classList.remove("prompt-controls-drag-active");
+        dragRow.classList.remove("sb-drag-active");
         dragRow.style.cssText = "";
         placeholder.replaceWith(dragRow);
         const endIndex = rows().indexOf(dragRow);
@@ -1166,7 +1166,7 @@ function attachDragReorder(listEl, items, rowSelector, onReorder) {
     }
 
     listEl.addEventListener("pointerdown", (event) => {
-        const handle = event.target.closest(".prompt-controls-drag-handle");
+        const handle = event.target.closest(".sb-drag-handle");
         const row = handle?.closest(rowSelector);
         if (!row) return;
         event.preventDefault();
@@ -1182,13 +1182,13 @@ function attachDragReorder(listEl, items, rowSelector, onReorder) {
         startIndex = rows().indexOf(row);
 
         placeholder = document.createElement("div");
-        placeholder.className = "prompt-controls-drag-placeholder";
+        placeholder.className = "sb-drag-placeholder";
         placeholder.style.height = `${rect.height}px`;
         row.replaceWith(placeholder);
 
         const dragHost = listEl.closest("#left-nav-panel") ?? document.body;
         dragHost.append(dragRow);
-        dragRow.classList.add("prompt-controls-drag-active");
+        dragRow.classList.add("sb-drag-active");
         Object.assign(dragRow.style, {
             position: "fixed",
             top: `${rect.top}px`,
@@ -1226,15 +1226,15 @@ function renderSelectionEditor(variable, body) {
     }
 
     const list = document.createElement("div");
-    list.className = "prompt-controls-option-list";
+    list.className = "sb-option-list";
 
     variable.options.forEach((option, optionIndex) => {
         const row = document.createElement("div");
-        row.className = "prompt-controls-option-row";
+        row.className = "sb-option-row";
         const labelInput = createTextInput(option.label, {placeholder: `옵션 ${optionIndex + 1}`});
-        labelInput.classList.add("prompt-controls-option-label-input");
+        labelInput.classList.add("sb-option-label-input");
         const valueInput = createTextarea(option.value, "이 옵션을 선택했을 때 {{variable}}에 삽입할 내용");
-        valueInput.classList.add("prompt-controls-option-value-input");
+        valueInput.classList.add("sb-option-value-input");
         labelInput.addEventListener("change", () => {
             option.label = labelInput.value.slice(0, 200) || `옵션 ${optionIndex + 1}`;
             persistDefinition();
@@ -1247,10 +1247,10 @@ function renderSelectionEditor(variable, body) {
         });
 
         const defaultLabel = document.createElement("label");
-        defaultLabel.className = "prompt-controls-default-picker";
+        defaultLabel.className = "sb-default-picker";
         const defaultInput = document.createElement("input");
         defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
-        defaultInput.name = `prompt-controls-default-${variable.id}`;
+        defaultInput.name = `sb-default-${variable.id}`;
         defaultInput.checked = variable.type === "multi" ? variable.defaultValue.includes(option.id) : variable.defaultValue === option.id;
         defaultInput.addEventListener("change", () => {
             if (variable.type === "multi") {
@@ -1277,15 +1277,15 @@ function renderSelectionEditor(variable, body) {
                 renderRuntimePanel();
                 persistDefinition();
             },
-            "prompt-controls-action-danger prompt-controls-option-remove",
+            "sb-action-danger sb-option-remove",
             "fa-trash-can",
         );
         remove.disabled = variable.options.length <= 1;
 
         const header = document.createElement("div");
-        header.className = "prompt-controls-option-row-header";
+        header.className = "sb-option-row-header";
         const index = document.createElement("span");
-        index.className = "prompt-controls-option-index prompt-controls-drag-handle";
+        index.className = "sb-option-index sb-drag-handle";
         index.style.touchAction = "none";
         index.append(createIcon("fa-grip-vertical"));
         const indexText = document.createElement("span");
@@ -1294,16 +1294,16 @@ function renderSelectionEditor(variable, body) {
         header.append(index, labelInput, defaultLabel, remove);
 
         const valueField = document.createElement("div");
-        valueField.className = "prompt-controls-option-value-field";
+        valueField.className = "sb-option-value-field";
         const valueIcon = document.createElement("span");
-        valueIcon.className = "prompt-controls-option-value-icon";
+        valueIcon.className = "sb-option-value-icon";
         valueIcon.append(createIcon("fa-align-left"));
         valueField.append(valueIcon, valueInput);
         row.append(header, valueField);
         list.append(row);
     });
 
-    attachDragReorder(list, variable.options, ".prompt-controls-option-row", () => {
+    attachDragReorder(list, variable.options, ".sb-option-row", () => {
         renderSettingsEditor();
         renderRuntimePanel();
         persistDefinition();
@@ -1323,7 +1323,7 @@ function renderSelectionEditor(variable, body) {
             renderRuntimePanel();
             persistDefinition();
         },
-        "prompt-controls-action-primary prompt-controls-add-option",
+        "sb-action-primary sb-add-option",
         "fa-plus",
     );
     section.append(list, addOption);
@@ -1332,15 +1332,15 @@ function renderSelectionEditor(variable, body) {
 
 function renderPromptToggleEditor(variable, body) {
     const section = createEditorSection("fa-toggle-on", "토글 제어", `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 선택한 항목만 ON으로 유지됩니다.`);
-    section.classList.add("prompt-controls-prompt-toggle-section");
+    section.classList.add("sb-prompt-toggle-section");
     const catalog = getNativePromptCatalog();
     const catalogById = new Map(catalog.map((prompt) => [prompt.identifier, prompt]));
     const list = document.createElement("div");
-    list.className = "prompt-controls-prompt-option-list";
+    list.className = "sb-prompt-option-list";
 
     if (variable.promptOptions.length === 0) {
         const empty = document.createElement("div");
-        empty.className = "prompt-controls-prompt-option-empty";
+        empty.className = "sb-prompt-option-empty";
         empty.append(createIcon("fa-toggle-off"));
         const copy = document.createElement("div");
         const title = document.createElement("strong");
@@ -1355,21 +1355,21 @@ function renderPromptToggleEditor(variable, body) {
     for (const option of variable.promptOptions) {
         const prompt = catalogById.get(option.promptIdentifier);
         const row = document.createElement("div");
-        row.className = "prompt-controls-prompt-option-row";
+        row.className = "sb-prompt-option-row";
         row.dataset.promptIdentifier = option.promptIdentifier;
         const handle = document.createElement("span");
-        handle.className = "prompt-controls-option-index prompt-controls-drag-handle";
+        handle.className = "sb-option-index sb-drag-handle";
         handle.style.touchAction = "none";
         handle.append(createIcon("fa-grip-vertical"));
         const icon = document.createElement("span");
-        icon.className = `prompt-controls-prompt-state-icon${prompt?.enabled ? " prompt-controls-prompt-state-icon-on" : ""}`;
+        icon.className = `sb-prompt-state-icon${prompt?.enabled ? " sb-prompt-state-icon-on" : ""}`;
         icon.append(createIcon(prompt?.enabled ? "fa-toggle-on" : "fa-toggle-off"));
         const copy = document.createElement("div");
-        copy.className = "prompt-controls-prompt-option-copy";
+        copy.className = "sb-prompt-option-copy";
         const name = document.createElement("strong");
         name.textContent = prompt?.name ?? option.label;
         const meta = document.createElement("span");
-        meta.className = "prompt-controls-prompt-state-text";
+        meta.className = "sb-prompt-state-text";
         meta.textContent =
             prompt ?
                 prompt.enabled ?
@@ -1379,10 +1379,10 @@ function renderPromptToggleEditor(variable, body) {
         copy.append(name, meta);
 
         const defaultLabel = document.createElement("label");
-        defaultLabel.className = "prompt-controls-default-picker";
+        defaultLabel.className = "sb-default-picker";
         const defaultInput = document.createElement("input");
         defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
-        defaultInput.name = `prompt-controls-prompt-default-${variable.id}`;
+        defaultInput.name = `sb-prompt-default-${variable.id}`;
         defaultInput.checked = variable.type === "multi" ? variable.promptDefaultValue.includes(option.id) : variable.promptDefaultValue === option.id;
         defaultInput.addEventListener("change", () => {
             if (variable.type === "multi") {
@@ -1410,14 +1410,14 @@ function renderPromptToggleEditor(variable, body) {
                 queueNativePromptSync([variable]);
                 persistDefinition();
             },
-            "prompt-controls-action-danger prompt-controls-prompt-option-remove",
+            "sb-action-danger sb-prompt-option-remove",
             "fa-xmark",
         );
         row.append(handle, icon, copy, defaultLabel, remove);
         list.append(row);
     }
 
-    attachDragReorder(list, variable.promptOptions, ".prompt-controls-prompt-option-row", () => {
+    attachDragReorder(list, variable.promptOptions, ".sb-prompt-option-row", () => {
         renderSettingsEditor();
         renderRuntimePanel();
         queueNativePromptSync([variable]);
@@ -1425,12 +1425,12 @@ function renderPromptToggleEditor(variable, body) {
     });
 
     const picker = document.createElement("div");
-    picker.className = "prompt-controls-prompt-picker";
+    picker.className = "sb-prompt-picker";
     picker.hidden = true;
     const pickerHeader = document.createElement("div");
-    pickerHeader.className = "prompt-controls-prompt-picker-header";
+    pickerHeader.className = "sb-prompt-picker-header";
     const pickerTitle = document.createElement("div");
-    pickerTitle.className = "prompt-controls-prompt-picker-title";
+    pickerTitle.className = "sb-prompt-picker-title";
     pickerTitle.append(createIcon("fa-list-check"));
     const pickerTitleText = document.createElement("strong");
     pickerTitleText.textContent = "추가할 토글 선택";
@@ -1440,26 +1440,26 @@ function renderPromptToggleEditor(variable, body) {
         () => {
             picker.hidden = true;
         },
-        "prompt-controls-prompt-picker-close",
+        "sb-prompt-picker-close",
         "fa-xmark",
     );
     pickerHeader.append(pickerTitle, closePicker);
 
     const searchWrap = document.createElement("label");
-    searchWrap.className = "prompt-controls-prompt-search";
+    searchWrap.className = "sb-prompt-search";
     searchWrap.append(createIcon("fa-magnifying-glass"));
     const search = createTextInput("", {placeholder: "프롬프트 이름 검색"});
     search.type = "search";
     searchWrap.append(search);
     const pickerList = document.createElement("div");
-    pickerList.className = "prompt-controls-prompt-picker-list";
+    pickerList.className = "sb-prompt-picker-list";
     const used = new Set(variable.promptOptions.map((option) => option.promptIdentifier));
     const usedByOtherVariables = new Set(currentDefinition.variables.filter((item) => item.id !== variable.id && item.promptToggleMode).flatMap((item) => item.promptOptions.map((option) => option.promptIdentifier)));
     const available = getToggleableNativePromptCatalog().filter((prompt) => !used.has(prompt.identifier) && !usedByOtherVariables.has(prompt.identifier));
     const selected = new Set();
     const pickerRows = [];
     const footer = document.createElement("div");
-    footer.className = "prompt-controls-prompt-picker-footer";
+    footer.className = "sb-prompt-picker-footer";
     const selectionCount = document.createElement("span");
     selectionCount.textContent = "0개 선택";
     const addSelected = createActionButton(
@@ -1474,7 +1474,7 @@ function renderPromptToggleEditor(variable, body) {
             queueNativePromptSync([variable]);
             persistDefinition();
         },
-        "prompt-controls-action-primary",
+        "sb-action-primary",
         "fa-plus",
     );
     addSelected.disabled = true;
@@ -1485,19 +1485,19 @@ function renderPromptToggleEditor(variable, body) {
 
     for (const prompt of available) {
         const row = document.createElement("label");
-        row.className = "prompt-controls-prompt-picker-row";
+        row.className = "sb-prompt-picker-row";
         row.dataset.search = prompt.name.toLocaleLowerCase();
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.addEventListener("change", () => {
             checkbox.checked ? selected.add(prompt.identifier) : selected.delete(prompt.identifier);
-            row.classList.toggle("prompt-controls-prompt-picker-row-selected", checkbox.checked);
+            row.classList.toggle("sb-prompt-picker-row-selected", checkbox.checked);
             updateSelection();
         });
         const state = document.createElement("span");
-        state.className = `prompt-controls-prompt-state-dot${prompt.enabled ? " prompt-controls-prompt-state-dot-on" : ""}`;
+        state.className = `sb-prompt-state-dot${prompt.enabled ? " sb-prompt-state-dot-on" : ""}`;
         const copy = document.createElement("span");
-        copy.className = "prompt-controls-prompt-picker-copy";
+        copy.className = "sb-prompt-picker-copy";
         const name = document.createElement("strong");
         name.textContent = prompt.name;
         copy.append(name);
@@ -1507,7 +1507,7 @@ function renderPromptToggleEditor(variable, body) {
     }
     if (available.length === 0) {
         const empty = document.createElement("div");
-        empty.className = "prompt-controls-prompt-picker-empty";
+        empty.className = "sb-prompt-picker-empty";
         empty.textContent = "추가할 수 있는 토글이 없습니다.";
         pickerList.append(empty);
     }
@@ -1524,7 +1524,7 @@ function renderPromptToggleEditor(variable, body) {
             picker.hidden = false;
             search.focus();
         },
-        "prompt-controls-action-primary prompt-controls-open-prompt-picker",
+        "sb-action-primary sb-open-prompt-picker",
         "fa-plus",
     );
     section.append(list, addToggle, picker);
@@ -1534,20 +1534,20 @@ function renderPromptToggleEditor(variable, body) {
 function renderToggleEditor(variable, body) {
     const section = createEditorSection("fa-toggle-on", "스위치", "ON과 OFF 상태에서 삽입할 내용을 설정합니다.");
     const defaultRow = document.createElement("div");
-    defaultRow.className = "prompt-controls-switch-row";
+    defaultRow.className = "sb-switch-row";
     const defaultCopy = document.createElement("span");
-    defaultCopy.className = "prompt-controls-switch-copy";
+    defaultCopy.className = "sb-switch-copy";
     defaultCopy.append(createIcon("fa-power-off"));
     const defaultText = document.createElement("span");
     defaultText.textContent = "프롬프트 기본 상태";
     defaultCopy.append(defaultText);
     const switchLabel = document.createElement("label");
-    switchLabel.className = "prompt-controls-switch";
+    switchLabel.className = "sb-switch";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = variable.defaultValue;
     const track = document.createElement("span");
-    track.className = "prompt-controls-switch-track";
+    track.className = "sb-switch-track";
     checkbox.addEventListener("change", () => {
         variable.defaultValue = checkbox.checked;
         persistDefinition();
@@ -1557,7 +1557,7 @@ function renderToggleEditor(variable, body) {
     defaultRow.append(defaultCopy, switchLabel);
 
     const grid = document.createElement("div");
-    grid.className = "prompt-controls-editor-grid";
+    grid.className = "sb-editor-grid";
     const onValue = createTextarea(variable.onValue, "ON일 때 삽입할 내용");
     const offValue = createTextarea(variable.offValue, "OFF일 때 삽입할 내용");
     onValue.addEventListener("change", () => {
@@ -1576,7 +1576,7 @@ function renderToggleEditor(variable, body) {
 function renderInputEditor(variable, body) {
     const section = createEditorSection("fa-keyboard", "텍스트", "변수의 기본값와 설명을 설정합니다.");
     const grid = document.createElement("div");
-    grid.className = "prompt-controls-editor-grid";
+    grid.className = "sb-editor-grid";
     const defaultInput = createTextInput(variable.defaultValue, {placeholder: "기본값"});
     const placeholderInput = createTextInput(variable.placeholder, {placeholder: "설명"});
     defaultInput.maxLength = 10000;
@@ -1598,16 +1598,16 @@ function renderInputEditor(variable, body) {
 
 function renderVariableCard(variable) {
     const details = document.createElement("details");
-    details.className = "prompt-controls-variable-card";
+    details.className = "sb-variable-card";
     details.open = expandedVariableIds.has(variable.id);
     details.addEventListener("toggle", () => {
         details.open ? expandedVariableIds.add(variable.id) : expandedVariableIds.delete(variable.id);
     });
 
     const summary = document.createElement("summary");
-    summary.className = "prompt-controls-variable-summary";
+    summary.className = "sb-variable-summary";
     const dragHandle = document.createElement("span");
-    dragHandle.className = "prompt-controls-variable-drag-handle prompt-controls-drag-handle";
+    dragHandle.className = "sb-variable-drag-handle sb-drag-handle";
     dragHandle.style.touchAction = "none";
     dragHandle.append(createIcon("fa-grip-vertical"));
     dragHandle.addEventListener("click", (event) => {
@@ -1615,25 +1615,25 @@ function renderVariableCard(variable) {
         event.stopPropagation();
     });
     const leading = document.createElement("span");
-    leading.className = "prompt-controls-variable-leading-icon";
+    leading.className = "sb-variable-leading-icon";
     const heading = document.createElement("span");
-    heading.className = "prompt-controls-variable-heading";
+    heading.className = "sb-variable-heading";
     const label = document.createElement("span");
-    label.className = "prompt-controls-variable-summary-label";
+    label.className = "sb-variable-summary-label";
     label.textContent = variable.label;
     const macro = document.createElement("code");
-    macro.className = "prompt-controls-variable-macro";
+    macro.className = "sb-variable-macro";
     macro.textContent = getVariableMacroLabel(variable);
     heading.append(label, macro);
     const type = document.createElement("span");
-    type.className = "prompt-controls-type-chip";
+    type.className = "sb-type-chip";
     type.append(createIcon(TYPE_ICONS[variable.type]));
     const typeText = document.createElement("span");
     typeText.textContent = TYPE_LABELS[variable.type];
     type.append(typeText);
     const pin = document.createElement("button");
     pin.type = "button";
-    pin.className = `prompt-controls-variable-pin${variable.pinned ? " prompt-controls-variable-pin-active" : ""}`;
+    pin.className = `sb-variable-pin${variable.pinned ? " sb-variable-pin-active" : ""}`;
     pin.title = variable.pinned ? "런타임 상단 고정 해제" : "런타임 상단에 고정";
     pin.setAttribute("aria-label", pin.title);
     pin.append(createIcon(variable.pinned ? "fa-thumbtack" : "fa-thumbtack"));
@@ -1646,39 +1646,39 @@ function renderVariableCard(variable) {
         persistDefinition();
     });
     const chevron = document.createElement("span");
-    chevron.className = "prompt-controls-variable-chevron";
+    chevron.className = "sb-variable-chevron";
     chevron.append(createIcon("fa-chevron-right"));
     summary.append(dragHandle, leading, heading, type, pin, chevron);
 
     const body = document.createElement("div");
-    body.className = "prompt-controls-variable-body";
+    body.className = "sb-variable-body";
     const basics = createEditorSection("fa-sliders", "기본 설정", variable.promptToggleMode ? "표시 이름과 프롬프트 선택 방식을 관리합니다." : "표시 이름, 변수 이름과 입력 방식을 관리합니다.");
     const modeControl = document.createElement("label");
-    modeControl.className = `prompt-controls-mode-control${variable.promptToggleMode ? " prompt-controls-mode-control-active" : ""}`;
+    modeControl.className = `sb-mode-control${variable.promptToggleMode ? " sb-mode-control-active" : ""}`;
     modeControl.title = "변수 치환 대신 등록한 프롬프트 토글을 ON/OFF합니다.";
     const modeCopy = document.createElement("span");
-    modeCopy.className = "prompt-controls-mode-control-copy";
+    modeCopy.className = "sb-mode-control-copy";
     const modeText = document.createElement("span");
     modeText.textContent = "토글 제어";
     modeCopy.append(modeText);
     const modeSwitch = document.createElement("span");
-    modeSwitch.className = "prompt-controls-switch";
+    modeSwitch.className = "sb-switch";
     const modeInput = document.createElement("input");
     modeInput.type = "checkbox";
     modeInput.checked = variable.promptToggleMode;
     const modeTrack = document.createElement("span");
-    modeTrack.className = "prompt-controls-switch-track";
+    modeTrack.className = "sb-switch-track";
     modeSwitch.append(modeInput, modeTrack);
     modeControl.append(modeCopy, modeSwitch);
-    basics.querySelector(".prompt-controls-card-section-header")?.append(modeControl);
+    basics.querySelector(".sb-card-section-header")?.append(modeControl);
     const grid = document.createElement("div");
-    grid.className = "prompt-controls-editor-grid";
+    grid.className = "sb-editor-grid";
     const labelInput = createTextInput(variable.label, {placeholder: "사용자에게 보일 이름"});
     const keyInput = createTextInput(variable.key, {placeholder: "variable_name"});
     const keyControl = document.createElement("div");
-    keyControl.className = "prompt-controls-key-control";
+    keyControl.className = "sb-key-control";
     const setvarControl = document.createElement("label");
-    setvarControl.className = `prompt-controls-setvar-control${variable.setvarMode ? " prompt-controls-setvar-control-active" : ""}`;
+    setvarControl.className = `sb-setvar-control${variable.setvarMode ? " sb-setvar-control-active" : ""}`;
     setvarControl.title = "체크하면 {{변수명}} 대신 같은 이름의 {{setvar::변수명::값}} 쓰기를 막고 {{getvar::변수명}}에 이 확장 값을 사용합니다.";
     const setvarInput = document.createElement("input");
     setvarInput.type = "checkbox";
@@ -1688,7 +1688,7 @@ function renderVariableCard(variable) {
     setvarControl.append(setvarInput, setvarText);
     keyControl.append(keyInput, setvarControl);
     const typeSelect = document.createElement("select");
-    typeSelect.className = "prompt-controls-editor-select";
+    typeSelect.className = "sb-editor-select";
     const availableTypes = variable.promptToggleMode ? ["dropdown", "single", "multi"] : Object.keys(TYPE_LABELS);
     for (const value of availableTypes) {
         const option = document.createElement("option");
@@ -1773,7 +1773,7 @@ function renderVariableCard(variable) {
     else if (variable.type === "input") renderInputEditor(variable, body);
 
     const actions = document.createElement("div");
-    actions.className = "prompt-controls-card-actions";
+    actions.className = "sb-card-actions";
     const copy = createActionButton(
         "변수명",
         async () => {
@@ -1785,7 +1785,7 @@ function renderVariableCard(variable) {
                 notify("warning", "클립보드에 복사하지 못했습니다.");
             }
         },
-        "prompt-controls-action-primary",
+        "sb-action-primary",
         "fa-copy",
     );
     const remove = createActionButton(
@@ -1800,7 +1800,7 @@ function renderVariableCard(variable) {
             updateRuntimeButton();
             persistDefinition();
         },
-        "prompt-controls-action-danger",
+        "sb-action-danger",
         "fa-trash-can",
     );
     if (!variable.promptToggleMode) actions.append(copy);
@@ -1820,48 +1820,48 @@ function ensureSettingsUI() {
 
     settingsContainer = document.createElement("div");
     settingsContainer.id = SETTINGS_ID;
-    settingsContainer.className = "prompt-controls-settings-root";
+    settingsContainer.className = "sb-settings-root";
     settingsContainer.innerHTML = `
-        <details class="prompt-controls-settings-shell" open>
-            <summary class="prompt-controls-settings-header">
-                <span class="prompt-controls-settings-mark"><i class="fa-solid fa-sliders"></i></span>
-                <span class="prompt-controls-settings-heading">
-                    <span class="prompt-controls-settings-title">User Preset Custom</span>
-                    <span class="prompt-controls-settings-subtitle">Preset variables &amp; chat controls</span>
+        <details class="sb-settings-shell" open>
+            <summary class="sb-settings-header">
+                <span class="sb-settings-mark"><i class="fa-solid fa-sliders"></i></span>
+                <span class="sb-settings-heading">
+                    <span class="sb-settings-title">Switch Binder</span>
+                    <span class="sb-settings-subtitle">Preset variables &amp; chat controls</span>
                 </span>
-                <i class="prompt-controls-settings-chevron fa-solid fa-chevron-down"></i>
+                <i class="sb-settings-chevron fa-solid fa-chevron-down"></i>
             </summary>
-            <div class="prompt-controls-settings-content">
-                <div class="prompt-controls-settings-toolbar">
-                    <div id="prompt_controls_settings_preset" class="prompt-controls-settings-preset"></div>
-                    <button id="prompt_controls_reload" type="button" class="prompt-controls-action"><i class="fa-solid fa-rotate"></i></button>
-                    <button id="prompt_controls_theme_toggle" type="button" class="prompt-controls-action" aria-pressed="false" title="다크 모드로 전환"><i class="fa-solid fa-moon"></i></button>
+            <div class="sb-settings-content">
+                <div class="sb-settings-toolbar">
+                    <div id="prompt_controls_settings_preset" class="sb-settings-preset"></div>
+                    <button id="prompt_controls_reload" type="button" class="sb-action"><i class="fa-solid fa-rotate"></i></button>
+                    <button id="prompt_controls_theme_toggle" type="button" class="sb-action" aria-pressed="false" title="다크 모드로 전환"><i class="fa-solid fa-moon"></i></button>
                 </div>
-                <p class="prompt-controls-help">현재 프롬프트에 변수를 정의합니다. 프롬프트에 {{variable}}을 넣고 입력창 왼쪽의 슬라이더 버튼에서 값을 선택하세요.</p>
-                <div class="prompt-controls-transfer-panel">
-                    <div class="prompt-controls-transfer-heading">
-                        <span class="prompt-controls-transfer-icon"><i class="fa-solid fa-arrow-right-arrow-left"></i></span>
+                <p class="sb-help">현재 프롬프트에 변수를 정의합니다. 프롬프트에 {{variable}}을 넣고 입력창 왼쪽의 슬라이더 버튼에서 값을 선택하세요.</p>
+                <div class="sb-transfer-panel">
+                    <div class="sb-transfer-heading">
+                        <span class="sb-transfer-icon"><i class="fa-solid fa-arrow-right-arrow-left"></i></span>
                         <span><strong>유저 설정 관리</strong><small>프롬프트 변수 설정 복사 · 관리</small></span>
                     </div>
-                    <div class="prompt-controls-transfer-actions">
-                        <div id="prompt_controls_copy_target_wrap" class="prompt-controls-searchable-select">
-                            <label class="prompt-controls-prompt-search prompt-controls-editor-select prompt-controls-searchable-select-field">
+                    <div class="sb-transfer-actions">
+                        <div id="prompt_controls_copy_target_wrap" class="sb-searchable-select">
+                            <label class="sb-prompt-search sb-editor-select sb-searchable-select-field">
                                 <i class="fa-solid fa-magnifying-glass"></i>
                                 <input id="prompt_controls_copy_target_search" type="text" placeholder="복사해올 프롬프트 선택" autocomplete="off">
-                                <button type="button" id="prompt_controls_copy_target_clear" class="prompt-controls-searchable-select-clear" tabindex="-1" hidden><i class="fa-solid fa-xmark"></i></button>
+                                <button type="button" id="prompt_controls_copy_target_clear" class="sb-searchable-select-clear" tabindex="-1" hidden><i class="fa-solid fa-xmark"></i></button>
                             </label>
-                            <div id="prompt_controls_copy_target_list" class="prompt-controls-prompt-picker-list prompt-controls-searchable-select-list" hidden></div>
+                            <div id="prompt_controls_copy_target_list" class="sb-prompt-picker-list sb-searchable-select-list" hidden></div>
                         </div>
-                        <button id="prompt_controls_copy" type="button" class="prompt-controls-action"><i class="fa-solid fa-copy"></i></button>
-                        <button id="prompt_controls_import" type="button" class="prompt-controls-action prompt-controls-action-primary"><i class="fa-solid fa-file-import"></i></button>
-                        <button id="prompt_controls_export" type="button" class="prompt-controls-action"><i class="fa-solid fa-file-export"></i></button>                        
+                        <button id="prompt_controls_copy" type="button" class="sb-action"><i class="fa-solid fa-copy"></i></button>
+                        <button id="prompt_controls_import" type="button" class="sb-action sb-action-primary"><i class="fa-solid fa-file-import"></i></button>
+                        <button id="prompt_controls_export" type="button" class="sb-action"><i class="fa-solid fa-file-export"></i></button>                        
                         <input id="prompt_controls_import_file" type="file" accept="application/json,.json" hidden>
                     </div>
                 </div>
                 <div id="prompt_controls_settings_warnings"></div>
-                <div id="prompt_controls_variable_list" class="prompt-controls-variable-list"></div>
-                <button id="prompt_controls_add" type="button" class="prompt-controls-action prompt-controls-action-primary"><i class="fa-solid fa-plus"></i><span>변수 추가</span></button>
-                <div id="prompt_controls_save_status" class="prompt-controls-save-status"></div>
+                <div id="prompt_controls_variable_list" class="sb-variable-list"></div>
+                <button id="prompt_controls_add" type="button" class="sb-action sb-action-primary"><i class="fa-solid fa-plus"></i><span>변수 추가</span></button>
+                <div id="prompt_controls_save_status" class="sb-save-status"></div>
             </div>
         </details>`;
     anchor.before(settingsContainer);
@@ -1968,7 +1968,7 @@ function renderSettingsWarnings() {
     target.replaceChildren();
     for (const warning of [...macroWarnings, ...importWarnings]) {
         const item = document.createElement("div");
-        item.className = "prompt-controls-warning";
+        item.className = "sb-warning";
         item.textContent = warning;
         target.append(item);
     }
@@ -2009,7 +2009,7 @@ function renderSettingsEditor() {
         const rows = [];
         for (const name of names) {
             const row = document.createElement("div");
-            row.className = "prompt-controls-prompt-picker-row";
+            row.className = "sb-prompt-picker-row";
             row.dataset.search = name.toLocaleLowerCase();
             row.textContent = name;
             row.addEventListener("click", () => {
@@ -2037,7 +2037,7 @@ function renderSettingsEditor() {
 
     if (!currentPresetKey) {
         const empty = document.createElement("div");
-        empty.className = "prompt-controls-empty";
+        empty.className = "sb-empty";
         empty.textContent = "API와 프롬프트를 선택한 뒤 변수를 추가할 수 있습니다.";
         list.append(empty);
         setSaveStatus("");
@@ -2045,7 +2045,7 @@ function renderSettingsEditor() {
     }
     if (currentDefinition.variables.length === 0) {
         const empty = document.createElement("div");
-        empty.className = "prompt-controls-empty";
+        empty.className = "sb-empty";
         empty.textContent = "아직 변수가 없습니다. “변수 추가”를 눌러 시작하세요.";
         list.append(empty);
     } else {
@@ -2053,7 +2053,7 @@ function renderSettingsEditor() {
     }
     if (!list.dataset.dragReorderAttached) {
         list.dataset.dragReorderAttached = "true";
-        attachDragReorder(list, currentDefinition.variables, ".prompt-controls-variable-card", () => {
+        attachDragReorder(list, currentDefinition.variables, ".sb-variable-card", () => {
             renderSettingsEditor();
             renderRuntimePanel();
             persistDefinition();
@@ -2078,7 +2078,7 @@ function updateFavoriteButtonState() {
 
     activeFavoriteId = matchingFavorite ? matchingFavorite.id : '';
 
-    button.classList.toggle('prompt-controls-action-favorited', Boolean(activeFavoriteId));
+    button.classList.toggle('sb-action-favorited', Boolean(activeFavoriteId));
 }
 
 function ensureRuntimePanel() {
@@ -2087,23 +2087,23 @@ function ensureRuntimePanel() {
     runtimePanel.id = PANEL_ID;
     runtimePanel.setAttribute("role", "dialog");
     runtimePanel.setAttribute("aria-modal", "false");
-    runtimePanel.setAttribute("aria-label", "User Preset Custom");
+    runtimePanel.setAttribute("aria-label", "Switch Binder");
     runtimePanel.innerHTML = `
-        <div class="prompt-controls-runtime-header">
-            <span class="prompt-controls-runtime-mark"><i class="fa-solid fa-sliders"></i></span>
-            <div class="prompt-controls-runtime-heading">
-                <div class="prompt-controls-runtime-title">User Preset Custom</div>
-                <div id="prompt_controls_runtime_preset" class="prompt-controls-runtime-preset"></div>
+        <div class="sb-runtime-header">
+            <span class="sb-runtime-mark"><i class="fa-solid fa-sliders"></i></span>
+            <div class="sb-runtime-heading">
+                <div class="sb-runtime-title">Switch Binder</div>
+                <div id="prompt_controls_runtime_preset" class="sb-runtime-preset"></div>
             </div>
-            <button id="prompt_controls_close" type="button" class="prompt-controls-icon-button" title="닫기" aria-label="닫기"><i class="fa-solid fa-xmark"></i></button>
+            <button id="prompt_controls_close" type="button" class="sb-icon-button" title="닫기" aria-label="닫기"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div id="prompt_controls_runtime_body" class="prompt-controls-runtime-body"></div>
-        <div class="prompt-controls-runtime-footer">
-            <button id="prompt_controls_favorite_manage" type="button" class="prompt-controls-icon-button" title="프리셋 관리"><i class="fa-solid fa-gear"></i></button>
-            <div class="prompt-controls-runtime-footer-right">
-                <button id="prompt_controls_reset" type="button" class="prompt-controls-action"><i class="fa-solid fa-arrow-rotate-left"></i></button>
-                <button id="prompt_controls_save_favorite" type="button" class="prompt-controls-action"><i class="fa-solid fa-star"></i></button>
-                <button id="prompt_controls_save_defaults" type="button" class="prompt-controls-action prompt-controls-action-primary"><i class="fa-solid fa-floppy-disk"></i></button>
+        <div id="prompt_controls_runtime_body" class="sb-runtime-body"></div>
+        <div class="sb-runtime-footer">
+            <button id="prompt_controls_favorite_manage" type="button" class="sb-icon-button" title="프리셋 관리"><i class="fa-solid fa-gear"></i></button>
+            <div class="sb-runtime-footer-right">
+                <button id="prompt_controls_reset" type="button" class="sb-action"><i class="fa-solid fa-arrow-rotate-left"></i></button>
+                <button id="prompt_controls_save_favorite" type="button" class="sb-action"><i class="fa-solid fa-star"></i></button>
+                <button id="prompt_controls_save_defaults" type="button" class="sb-action sb-action-primary"><i class="fa-solid fa-floppy-disk"></i></button>
             </div>
         </div>`;
     document.body.append(runtimePanel);
@@ -2114,7 +2114,7 @@ function ensureRuntimePanel() {
     
     runtimePanel.querySelector('#prompt_controls_favorite_manage')?.addEventListener('click', event => {
         favoriteDeleteMode = !favoriteDeleteMode;
-        event.currentTarget.classList.toggle('prompt-controls-action-favorited', favoriteDeleteMode);
+        event.currentTarget.classList.toggle('sb-action-favorited', favoriteDeleteMode);
         renderRuntimePanel();
     });
     runtimePanel.querySelector('#prompt_controls_save_favorite')?.addEventListener('click', () => {
@@ -2138,15 +2138,15 @@ function ensureRuntimePanel() {
 
 function createRuntimeLabel(variable) {
     const label = document.createElement("label");
-    label.className = "prompt-controls-runtime-label";
+    label.className = "sb-runtime-label";
     const copy = document.createElement("span");
-    copy.className = "prompt-controls-runtime-label-copy";
+    copy.className = "sb-runtime-label-copy";
     if (variable.pinned) copy.append(createIcon("fa-thumbtack"));
     const text = document.createElement("span");
     text.textContent = variable.label;
     copy.append(text);
     const macro = document.createElement("span");
-    macro.className = "prompt-controls-runtime-macro";
+    macro.className = "sb-runtime-macro";
     macro.textContent = getVariableMacroLabel(variable);
     label.append(copy, macro);
     return label;
@@ -2164,7 +2164,7 @@ function renderRuntimeSelection(variable, field) {
 
     if (variable.type === "dropdown") {
         const select = document.createElement("select");
-        select.className = "prompt-controls-select";
+        select.className = "sb-select";
         for (const option of options) {
             const element = document.createElement("option");
             element.value = option.id;
@@ -2178,13 +2178,13 @@ function renderRuntimeSelection(variable, field) {
     }
 
     const list = document.createElement("div");
-    list.className = "prompt-controls-choice-list";
+    list.className = "sb-choice-list";
     for (const option of options) {
         const choice = document.createElement("label");
-        choice.className = "prompt-controls-choice";
+        choice.className = "sb-choice";
         const input = document.createElement("input");
         input.type = variable.type === "multi" ? "checkbox" : "radio";
-        input.name = `prompt-controls-runtime-${variable.id}`;
+        input.name = `sb-runtime-${variable.id}`;
         input.checked = variable.type === "multi" ? raw.includes(option.id) : raw === option.id;
         input.addEventListener("change", () => {
             if (variable.type === "multi") {
@@ -2196,14 +2196,14 @@ function renderRuntimeSelection(variable, field) {
             }
         });
         const copy = document.createElement("span");
-        copy.className = "prompt-controls-choice-copy";
+        copy.className = "sb-choice-copy";
         const optionLabel = document.createElement("span");
-        optionLabel.className = "prompt-controls-choice-label";
+        optionLabel.className = "sb-choice-label";
         optionLabel.textContent = promptCatalog?.get(option.promptIdentifier)?.name ?? option.label;
         copy.append(optionLabel);
         if (!variable.promptToggleMode && option.value) {
             const preview = document.createElement("span");
-            preview.className = "prompt-controls-choice-preview";
+            preview.className = "sb-choice-preview";
             preview.textContent = option.value;
             copy.append(preview);
         }
@@ -2215,16 +2215,16 @@ function renderRuntimeSelection(variable, field) {
 
 function renderRuntimeToggle(variable, field) {
     const row = document.createElement("div");
-    row.className = "prompt-controls-switch-row";
+    row.className = "sb-switch-row";
     const stateText = document.createElement("span");
     stateText.textContent = getRawValue(variable) ? "ON" : "OFF";
     const switchLabel = document.createElement("label");
-    switchLabel.className = "prompt-controls-switch";
+    switchLabel.className = "sb-switch";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = getRawValue(variable);
     const track = document.createElement("span");
-    track.className = "prompt-controls-switch-track";
+    track.className = "sb-switch-track";
     checkbox.addEventListener("change", () => {
         if (setRawValue(variable, checkbox.checked)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
     });
@@ -2235,17 +2235,17 @@ function renderRuntimeToggle(variable, field) {
 
 function renderSinglePromptToggle(variable, option, field) {
     const row = document.createElement("div");
-    row.className = "prompt-controls-switch-row";
+    row.className = "sb-switch-row";
     const stateText = document.createElement("span");
     const isOn = getRawValue(variable) === option.id;
     stateText.textContent = isOn ? "ON" : "OFF";
     const switchLabel = document.createElement("label");
-    switchLabel.className = "prompt-controls-switch";
+    switchLabel.className = "sb-switch";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = isOn;
     const track = document.createElement("span");
-    track.className = "prompt-controls-switch-track";
+    track.className = "sb-switch-track";
     checkbox.addEventListener("change", () => {
         const nextValue = checkbox.checked ? option.id : "";
         if (setRawValue(variable, nextValue)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
@@ -2258,7 +2258,7 @@ function renderSinglePromptToggle(variable, option, field) {
 function renderRuntimeInput(variable, field) {
     const input = document.createElement("input");
     input.type = "text";
-    input.className = "prompt-controls-input";
+    input.className = "sb-input";
     input.value = getRawValue(variable);
     input.placeholder = variable.placeholder;
     input.maxLength = 10000;
@@ -2268,16 +2268,16 @@ function renderRuntimeInput(variable, field) {
 
 function renderRuntimeFavorites(body) {
     const section = document.createElement("div");
-    section.className = "prompt-controls-runtime-favorites";
+    section.className = "sb-runtime-favorites";
 
     for (const favorite of currentDefinition.favorites) {
         const row = document.createElement('div');
-        row.className = 'prompt-controls-runtime-favorite-row';
+        row.className = 'sb-runtime-favorite-row';
 
         if (favoriteDeleteMode) {
             const removeBadge = document.createElement('button');
             removeBadge.type = 'button';
-            removeBadge.className = 'prompt-controls-favorite-remove-badge';
+            removeBadge.className = 'sb-favorite-remove-badge';
             removeBadge.append(createIcon('fa-xmark'));
             removeBadge.addEventListener('click', event => {
                 event.stopPropagation();
@@ -2288,7 +2288,7 @@ function renderRuntimeFavorites(body) {
 
         const applyButton = document.createElement('button');
         applyButton.type = 'button';
-        applyButton.className = 'prompt-controls-action';
+        applyButton.className = 'sb-action';
         applyButton.append(createIcon('fa-bolt'));
         const label = document.createElement('span');
         label.textContent = favorite.name;
@@ -2318,22 +2318,22 @@ function renderRuntimePanel() {
 
     if (!currentPresetKey) {
         const message = document.createElement("div");
-        message.className = "prompt-controls-message";
+        message.className = "sb-message";
         message.textContent = "먼저 API와 프롬프트를 선택하세요.";
         body.append(message);
         return;
     }
     if (!hasActiveChat()) {
         const message = document.createElement("div");
-        message.className = "prompt-controls-message";
+        message.className = "sb-message";
         message.textContent = "채팅을 열면 변수 값을 선택할 수 있습니다.";
         body.append(message);
         return;
     }
     if (currentDefinition.variables.length === 0) {
         const message = document.createElement("div");
-        message.className = "prompt-controls-message";
-        message.textContent = "이 프롬프트에 할당된 User Preset Custom 변수가 없습니다.";
+        message.className = "sb-message";
+        message.textContent = "이 프롬프트에 할당된 Switch Binder 변수가 없습니다.";
         body.append(message);
         return;
     }
@@ -2349,7 +2349,7 @@ function renderRuntimePanel() {
         if (variables.length === 0) continue;
         if (pinned.length && regular.length) {
             const groupLabel = document.createElement("div");
-            groupLabel.className = "prompt-controls-runtime-group-label";
+            groupLabel.className = "sb-runtime-group-label";
             groupLabel.append(createIcon(icon));
             const text = document.createElement("span");
             text.textContent = label;
@@ -2358,7 +2358,7 @@ function renderRuntimePanel() {
         }
         for (const variable of variables) {
             const field = document.createElement("div");
-            field.className = `prompt-controls-runtime-field${variable.pinned ? " prompt-controls-runtime-field-pinned" : ""}`;
+            field.className = `sb-runtime-field${variable.pinned ? " sb-runtime-field-pinned" : ""}`;
             field.append(createRuntimeLabel(variable));
             if (["dropdown", "single", "multi"].includes(variable.type)) renderRuntimeSelection(variable, field);
             if (variable.type === "toggle") renderRuntimeToggle(variable, field);
@@ -2445,7 +2445,7 @@ function saveCurrentValuesAsDefaults() {
 }
 
 function positionRuntimePanel() {
-    if (!runtimePanel?.classList.contains("prompt-controls-open") || !runtimeButton) return;
+    if (!runtimePanel?.classList.contains("sb-open") || !runtimeButton) return;
     const buttonRect = runtimeButton.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const margin = 8;
@@ -2463,18 +2463,18 @@ function positionRuntimePanel() {
 
 function openRuntimePanel() {
     renderRuntimePanel();
-    runtimePanel.classList.add("prompt-controls-open");
+    runtimePanel.classList.add("sb-open");
     runtimeButton?.setAttribute("aria-expanded", "true");
     positionRuntimePanel();
 }
 
 function closeRuntimePanel() {
-    runtimePanel?.classList.remove("prompt-controls-open");
+    runtimePanel?.classList.remove("sb-open");
     runtimeButton?.setAttribute("aria-expanded", "false");
 }
 
 function toggleRuntimePanel() {
-    if (runtimePanel?.classList.contains("prompt-controls-open")) closeRuntimePanel();
+    if (runtimePanel?.classList.contains("sb-open")) closeRuntimePanel();
     else openRuntimePanel();
 }
 
@@ -2486,7 +2486,7 @@ function ensureRuntimeButton() {
         runtimeButton = document.createElement("div");
         runtimeButton.id = BUTTON_ID;
         runtimeButton.className = "fa-solid fa-sliders interactable";
-        runtimeButton.title = "User Preset Custom";
+        runtimeButton.title = "Switch Binder";
         runtimeButton.setAttribute("role", "button");
         runtimeButton.setAttribute("tabindex", "0");
         runtimeButton.setAttribute("aria-haspopup", "dialog");
@@ -2516,8 +2516,8 @@ function ensureRuntimeButton() {
 function updateRuntimeButton() {
     if (!runtimeButton) return;
     const count = currentDefinition.variables.length;
-    runtimeButton.classList.toggle("prompt-controls-has-variables", count > 0);
-    runtimeButton.title = count > 0 ? `User Preset Custom · ${count}개 변수` : "User Preset Custom · 설정된 변수 없음";
+    runtimeButton.classList.toggle("sb-has-variables", count > 0);
+    runtimeButton.title = count > 0 ? `Switch Binder · ${count}개 변수` : "Switch Binder · 설정된 변수 없음";
 }
 
 function bindStEvent(type, handler) {
@@ -2528,7 +2528,7 @@ function bindStEvent(type, handler) {
 }
 
 function handleDocumentPointerDown(event) {
-    if (!runtimePanel?.classList.contains("prompt-controls-open")) return;
+    if (!runtimePanel?.classList.contains("sb-open")) return;
     if (runtimePanel.contains(event.target) || runtimeButton?.contains(event.target)) return;
     closeRuntimePanel();
 }
@@ -2568,7 +2568,7 @@ function initialize() {
     window.addEventListener("resize", positionRuntimePanel);
     window.addEventListener("pagehide", cleanup, {once: true});
     loadCurrentPreset();
-    console.log("[User Preset Custom] Loaded.");
+    console.log("[Switch Binder] Loaded.");
 }
 
 function cleanup() {
