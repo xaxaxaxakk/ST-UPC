@@ -326,7 +326,9 @@ function sanitizeRuntimeValue(variable, value) {
     if (variable.type === "toggle") return value === true;
     if (variable.type === "input") return asString(value, 10000);
     const candidate = asString(value, 160);
-    return options.some((option) => option.id === candidate) ? candidate : (options[0]?.id ?? "");
+    if (options.some((option) => option.id === candidate)) return candidate;
+    if (variable.promptToggleMode && options.length === 1 && candidate === "") return "";
+    return options[0]?.id ?? "";
 }
 
 function setRawValue(variable, value) {
@@ -2090,6 +2092,12 @@ function renderRuntimeSelection(variable, field) {
     const raw = getRawValue(variable);
     const options = getVariableOptions(variable);
     const promptCatalog = variable.promptToggleMode ? new Map(getNativePromptCatalog().map((prompt) => [prompt.identifier, prompt])) : null;
+
+    if (variable.promptToggleMode && variable.type !== "multi" && options.length === 1) {
+        renderSinglePromptToggle(variable, options[0], field);
+        return;
+    }
+
     if (variable.type === "dropdown") {
         const select = document.createElement("select");
         select.className = "prompt-controls-select";
@@ -2155,6 +2163,28 @@ function renderRuntimeToggle(variable, field) {
     track.className = "prompt-controls-switch-track";
     checkbox.addEventListener("change", () => {
         if (setRawValue(variable, checkbox.checked)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
+    });
+    switchLabel.append(checkbox, track);
+    row.append(stateText, switchLabel);
+    field.append(row);
+}
+
+function renderSinglePromptToggle(variable, option, field) {
+    const row = document.createElement("div");
+    row.className = "prompt-controls-switch-row";
+    const stateText = document.createElement("span");
+    const isOn = getRawValue(variable) === option.id;
+    stateText.textContent = isOn ? "ON" : "OFF";
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "prompt-controls-switch";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = isOn;
+    const track = document.createElement("span");
+    track.className = "prompt-controls-switch-track";
+    checkbox.addEventListener("change", () => {
+        const nextValue = checkbox.checked ? option.id : "";
+        if (setRawValue(variable, nextValue)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
     });
     switchLabel.append(checkbox, track);
     row.append(stateText, switchLabel);
