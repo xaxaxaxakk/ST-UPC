@@ -1286,7 +1286,8 @@ body.prompt-controls-theme-dark #prompt_controls_settings {
 }
 
 .prompt-controls-prompt-picker-row {
-    display: block;
+    display: flex;
+    align-items: center;
     width: 100%;
     padding: 0.6rem 1rem;
     font-size: 13px !important;
