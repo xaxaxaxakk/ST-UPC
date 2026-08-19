@@ -142,13 +142,15 @@ function normalizePromptOption(raw, index) {
     };
 }
 
-function normalizeSelectionDefault(type, rawDefault, options) {
+function normalizeSelectionDefault(type, rawDefault, options, isPromptToggle = false) {
     if (type === "multi") {
         const values = Array.isArray(rawDefault) ? rawDefault : [];
         return [...new Set(values.filter((value) => options.some((option) => option.id === value)))];
     }
     const candidate = asString(rawDefault, 160);
-    return options.some((option) => option.id === candidate) ? candidate : (options[0]?.id ?? "");
+    if (options.some((option) => option.id === candidate)) return candidate;
+    if (isPromptToggle && options.length === 1) return "";
+    return options[0]?.id ?? "";
 }
 
 function normalizeVariableDefault(type, rawDefault, options) {
@@ -194,7 +196,7 @@ function normalizeVariable(raw, index) {
         setvarMode: variable.setvarMode === true,
         pinned: variable.pinned === true,
         defaultValue,
-        promptDefaultValue: normalizeSelectionDefault(promptType, variable.promptDefaultValue, promptOptions),
+        promptDefaultValue: normalizeSelectionDefault(promptType, variable.promptDefaultValue, promptOptions, true),
         separator: asString(variable.separator, 40) || "\n",
         placeholder: asString(variable.placeholder, 300),
         onValue: asString(variable.onValue, 20000),
@@ -1402,7 +1404,7 @@ function renderPromptToggleEditor(variable, body) {
             "등록 제거",
             () => {
                 variable.promptOptions = variable.promptOptions.filter((item) => item.id !== option.id);
-                variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions);
+                variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
                 renderSettingsEditor();
                 renderRuntimePanel();
                 queueNativePromptSync([variable]);
@@ -1466,7 +1468,7 @@ function renderPromptToggleEditor(variable, body) {
             const additions = available.filter((prompt) => selected.has(prompt.identifier)).map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name}));
             if (additions.length === 0) return;
             variable.promptOptions.push(...additions);
-            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions);
+            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
             renderSettingsEditor();
             renderRuntimePanel();
             queueNativePromptSync([variable]);
@@ -1739,7 +1741,7 @@ function renderVariableCard(variable) {
         else variable.variableType = variable.type;
         variable.promptToggleMode = modeInput.checked;
         variable.type = variable.promptToggleMode ? variable.promptType : variable.variableType;
-        variable.promptDefaultValue = normalizeSelectionDefault(variable.promptType, variable.promptDefaultValue, variable.promptOptions);
+        variable.promptDefaultValue = normalizeSelectionDefault(variable.promptType, variable.promptDefaultValue, variable.promptOptions, true);
         refreshMacros();
         renderSettingsEditor();
         renderRuntimePanel();
@@ -1750,7 +1752,7 @@ function renderVariableCard(variable) {
         variable.type = typeSelect.value;
         if (variable.promptToggleMode) {
             variable.promptType = variable.type;
-            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, null, variable.promptOptions);
+            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, null, variable.promptOptions, true);
         } else {
             variable.variableType = variable.type;
             variable.defaultValue = normalizeVariableDefault(variable.type, null, variable.options);
