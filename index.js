@@ -1,6 +1,6 @@
 const MODULE_NAME = "userPresetCustom";
 const CHAT_STATE_KEY = "userPresetCustom";
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 7;
 const BUTTON_ID = "prompt_controls_button";
 const PANEL_ID = "prompt_controls_runtime_panel";
 const SETTINGS_ID = "prompt_controls_settings";
@@ -139,6 +139,7 @@ function normalizePromptOption(raw, index) {
         id: asString(option.id, 160) || makeId("prompt-option"),
         promptIdentifier,
         label: asString(option.label, 300) || promptIdentifier || `프롬프트 ${index + 1}`,
+        displayLabel: asString(option.displayLabel, 300).trim(),
     };
 }
 
@@ -195,6 +196,7 @@ function normalizeVariable(raw, index) {
         promptToggleMode,
         setvarMode: variable.setvarMode === true,
         pinned: variable.pinned === true,
+        runtimeHidden: variable.runtimeHidden === true,
         defaultValue,
         promptDefaultValue: normalizeSelectionDefault(promptType, variable.promptDefaultValue, promptOptions, true),
         separator: asString(variable.separator, 40) || "\n",
@@ -308,6 +310,14 @@ function getRawValue(variable) {
 
 function getVariableOptions(variable) {
     return variable.promptToggleMode ? variable.promptOptions : variable.options;
+}
+
+function getPromptOptionDisplayLabel(option, promptCatalog = null) {
+    return option.displayLabel || promptCatalog?.get(option.promptIdentifier)?.name || option.label;
+}
+
+function isVariableVisibleInRuntime(variable) {
+    return variable.runtimeHidden !== true;
 }
 
 function getVariableDefaultValue(variable) {
@@ -981,6 +991,7 @@ function createVariable() {
         promptToggleMode: false,
         setvarMode: false,
         pinned: false,
+        runtimeHidden: false,
         defaultValue: firstOption.id,
         promptDefaultValue: "",
         separator: "\n",
@@ -1096,15 +1107,16 @@ function removeDragShield() {
     }, 0);
 }
 
-function attachDragReorder(listEl, items, rowSelector, onReorder) {
+function attachDragReorder(listEl, itemsOrGetter, rowSelector, onReorder) {
     let dragRow = null;
     let placeholder = null;
     let handleEl = null;
     let pointerId = null;
     let startY = 0;
     let baseTop = 0;
-    let startIndex = -1;
+    let dragItem = null;
     const rows = () => [...listEl.children];
+    const getItems = () => (typeof itemsOrGetter === "function" ? itemsOrGetter() : itemsOrGetter);
 
     function onPointerMove(event) {
         if (!dragRow || (pointerId !== null && event.pointerId !== pointerId)) return;
@@ -1153,19 +1165,24 @@ function attachDragReorder(listEl, items, rowSelector, onReorder) {
     function onPointerUp(event) {
         if (pointerId !== null && event.pointerId !== pointerId) return;
         const endIndex = endDrag();
-        if (endIndex !== -1 && endIndex !== startIndex) {
-            const [moved] = items.splice(startIndex, 1);
+        const items = getItems();
+        const itemIndex = items.indexOf(dragItem);
+        if (endIndex !== -1 && itemIndex !== -1 && endIndex !== itemIndex) {
+            const [moved] = items.splice(itemIndex, 1);
             items.splice(endIndex, 0, moved);
             onReorder();
         }
+        dragItem = null;
     }
 
     function onPointerCancel(event) {
         if (pointerId !== null && event.pointerId !== pointerId) return;
         endDrag();
+        dragItem = null;
     }
 
     listEl.addEventListener("pointerdown", (event) => {
+        if (dragRow) return;
         const handle = event.target.closest(".sb-drag-handle");
         const row = handle?.closest(rowSelector);
         if (!row) return;
@@ -1179,7 +1196,8 @@ function attachDragReorder(listEl, items, rowSelector, onReorder) {
         pointerId = event.pointerId;
         startY = event.clientY;
         baseTop = rect.top;
-        startIndex = rows().indexOf(row);
+        const startIndex = rows().indexOf(row);
+        dragItem = getItems()[startIndex] ?? null;
 
         placeholder = document.createElement("div");
         placeholder.className = "sb-drag-placeholder";
@@ -1354,6 +1372,7 @@ function renderPromptToggleEditor(variable, body) {
 
     for (const option of variable.promptOptions) {
         const prompt = catalogById.get(option.promptIdentifier);
+        const nativeName = prompt?.name ?? option.label;
         const row = document.createElement("div");
         row.className = "sb-prompt-option-row";
         row.dataset.promptIdentifier = option.promptIdentifier;
@@ -1367,7 +1386,21 @@ function renderPromptToggleEditor(variable, body) {
         const copy = document.createElement("div");
         copy.className = "sb-prompt-option-copy";
         const name = document.createElement("strong");
-        name.textContent = prompt?.name ?? option.label;
+        name.textContent = nativeName;
+        name.title = `실제 토글 이름: ${nativeName}`;
+        const displayLabelInput = createTextInput(option.displayLabel, {
+            placeholder: `표시용 라벨 · ${nativeName}`,
+            className: "sb-editor-input sb-prompt-display-label-input",
+        });
+        displayLabelInput.maxLength = 300;
+        displayLabelInput.setAttribute("aria-label", `${nativeName} 표시용 라벨`);
+        displayLabelInput.title = "런타임 패널에 표시할 이름입니다. 비워두면 실제 토글 이름을 사용합니다.";
+        displayLabelInput.addEventListener("change", () => {
+            option.displayLabel = displayLabelInput.value.slice(0, 300).trim();
+            displayLabelInput.value = option.displayLabel;
+            renderRuntimePanel();
+            persistDefinition();
+        });
         const meta = document.createElement("span");
         meta.className = "sb-prompt-state-text";
         meta.textContent =
@@ -1376,7 +1409,7 @@ function renderPromptToggleEditor(variable, body) {
                     "현재 ON"
                 :   "현재 OFF"
             :   "현재 프롬프트에서 찾을 수 없음";
-        copy.append(name, meta);
+        copy.append(name, displayLabelInput, meta);
 
         const defaultLabel = document.createElement("label");
         defaultLabel.className = "sb-default-picker";
@@ -1465,7 +1498,9 @@ function renderPromptToggleEditor(variable, body) {
     const addSelected = createActionButton(
         "선택한 토글 추가",
         () => {
-            const additions = available.filter((prompt) => selected.has(prompt.identifier)).map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name}));
+            const additions = available
+                .filter((prompt) => selected.has(prompt.identifier))
+                .map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name, displayLabel: ""}));
             if (additions.length === 0) return;
             variable.promptOptions.push(...additions);
             variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
@@ -1631,9 +1666,24 @@ function renderVariableCard(variable) {
     const typeText = document.createElement("span");
     typeText.textContent = TYPE_LABELS[variable.type];
     type.append(typeText);
+    const visibility = document.createElement("button");
+    visibility.type = "button";
+    visibility.className = `sb-variable-control sb-variable-visibility${variable.runtimeHidden ? " sb-variable-visibility-hidden" : ""}`;
+    visibility.title = variable.runtimeHidden ? "런타임 패널에 표시" : "런타임 패널에서 숨기기";
+    visibility.setAttribute("aria-label", visibility.title);
+    visibility.setAttribute("aria-pressed", variable.runtimeHidden ? "true" : "false");
+    visibility.append(createIcon(variable.runtimeHidden ? "fa-eye-slash" : "fa-eye"));
+    visibility.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        variable.runtimeHidden = !variable.runtimeHidden;
+        renderSettingsEditor();
+        renderRuntimePanel();
+        persistDefinition();
+    });
     const pin = document.createElement("button");
     pin.type = "button";
-    pin.className = `sb-variable-pin${variable.pinned ? " sb-variable-pin-active" : ""}`;
+    pin.className = `sb-variable-control sb-variable-pin${variable.pinned ? " sb-variable-pin-active" : ""}`;
     pin.title = variable.pinned ? "런타임 상단 고정 해제" : "런타임 상단에 고정";
     pin.setAttribute("aria-label", pin.title);
     pin.append(createIcon(variable.pinned ? "fa-thumbtack" : "fa-thumbtack"));
@@ -1648,7 +1698,7 @@ function renderVariableCard(variable) {
     const chevron = document.createElement("span");
     chevron.className = "sb-variable-chevron";
     chevron.append(createIcon("fa-chevron-right"));
-    summary.append(dragHandle, leading, heading, type, pin, chevron);
+    summary.append(dragHandle, leading, heading, type, visibility, pin, chevron);
 
     const body = document.createElement("div");
     body.className = "sb-variable-body";
@@ -2053,7 +2103,7 @@ function renderSettingsEditor() {
     }
     if (!list.dataset.dragReorderAttached) {
         list.dataset.dragReorderAttached = "true";
-        attachDragReorder(list, currentDefinition.variables, ".sb-variable-card", () => {
+        attachDragReorder(list, () => currentDefinition.variables, ".sb-variable-card", () => {
             renderSettingsEditor();
             renderRuntimePanel();
             persistDefinition();
@@ -2158,7 +2208,7 @@ function renderRuntimeSelection(variable, field) {
     const promptCatalog = variable.promptToggleMode ? new Map(getNativePromptCatalog().map((prompt) => [prompt.identifier, prompt])) : null;
 
     if (variable.promptToggleMode && variable.type !== "multi" && options.length === 1) {
-        renderSinglePromptToggle(variable, options[0], field);
+        renderSinglePromptToggle(variable, options[0], field, promptCatalog);
         return;
     }
 
@@ -2168,7 +2218,7 @@ function renderRuntimeSelection(variable, field) {
         for (const option of options) {
             const element = document.createElement("option");
             element.value = option.id;
-            element.textContent = promptCatalog?.get(option.promptIdentifier)?.name ?? option.label;
+            element.textContent = variable.promptToggleMode ? getPromptOptionDisplayLabel(option, promptCatalog) : option.label;
             element.selected = raw === option.id;
             select.append(element);
         }
@@ -2199,7 +2249,7 @@ function renderRuntimeSelection(variable, field) {
         copy.className = "sb-choice-copy";
         const optionLabel = document.createElement("span");
         optionLabel.className = "sb-choice-label";
-        optionLabel.textContent = promptCatalog?.get(option.promptIdentifier)?.name ?? option.label;
+        optionLabel.textContent = variable.promptToggleMode ? getPromptOptionDisplayLabel(option, promptCatalog) : option.label;
         copy.append(optionLabel);
         if (!variable.promptToggleMode && option.value) {
             const preview = document.createElement("span");
@@ -2233,10 +2283,16 @@ function renderRuntimeToggle(variable, field) {
     field.append(row);
 }
 
-function renderSinglePromptToggle(variable, option, field) {
+function renderSinglePromptToggle(variable, option, field, promptCatalog) {
     const row = document.createElement("div");
     row.className = "sb-switch-row";
+    const stateCopy = document.createElement("span");
+    stateCopy.className = "sb-switch-state-copy";
+    const optionLabel = document.createElement("span");
+    optionLabel.className = "sb-switch-option-label";
+    optionLabel.textContent = getPromptOptionDisplayLabel(option, promptCatalog);
     const stateText = document.createElement("span");
+    stateText.className = "sb-switch-state-text";
     const isOn = getRawValue(variable) === option.id;
     stateText.textContent = isOn ? "ON" : "OFF";
     const switchLabel = document.createElement("label");
@@ -2251,7 +2307,8 @@ function renderSinglePromptToggle(variable, option, field) {
         if (setRawValue(variable, nextValue)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
     });
     switchLabel.append(checkbox, track);
-    row.append(stateText, switchLabel);
+    stateCopy.append(optionLabel, stateText);
+    row.append(stateCopy, switchLabel);
     field.append(row);
 }
 
@@ -2340,8 +2397,18 @@ function renderRuntimePanel() {
 
     renderRuntimeFavorites(body);
 
-    const pinned = currentDefinition.variables.filter((variable) => variable.pinned);
-    const regular = currentDefinition.variables.filter((variable) => !variable.pinned);
+    const runtimeVariables = currentDefinition.variables.filter(isVariableVisibleInRuntime);
+    if (runtimeVariables.length === 0) {
+        const message = document.createElement("div");
+        message.className = "sb-message";
+        message.textContent = "런타임 패널에 표시하도록 설정된 변수가 없습니다.";
+        body.append(message);
+        updateFavoriteButtonState();
+        return;
+    }
+
+    const pinned = runtimeVariables.filter((variable) => variable.pinned);
+    const regular = runtimeVariables.filter((variable) => !variable.pinned);
     for (const [label, icon, variables] of [
         ["고정 변수", "fa-thumbtack", pinned],
         ["나머지 변수", "fa-layer-group", regular],
