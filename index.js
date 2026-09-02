@@ -38,6 +38,21 @@ let settingsPlacementObserver = null;
 let promptCatalogObserver = null;
 let promptCatalogSyncTimer = null;
 let observedPromptCatalogList = null;
+let settingsPlacementTarget = null;
+let nativeCatalogCache = null;
+let toggleableCatalogCache = null;
+let catalogCacheScheduled = false;
+let suppressCatalogSync = false;
+let lastPersistedPayload = "";
+let lastPersistedKey = "";
+let nativePromptRenderWatchdog = null;
+let nativePromptSettleTimer = null;
+let lightRenderInFlight = false;
+let lightRenderPending = false;
+let settingsEditorDirty = false;
+let settingsVisibilityObserver = null;
+let observedSettingsContainer = null;
+let resizeFrame = 0;
 let reloadTimer = null;
 let nativePromptRenderTimer = null;
 let nativePromptRenderInFlight = false;
@@ -498,7 +513,48 @@ function getNativePromptOrder(settings) {
     return orderGroups.find((group) => String(group?.character_id) === "100001")?.order ?? orderGroups[0]?.order ?? [];
 }
 
+function getPromptManagerList() {
+    return document.getElementById("completion_prompt_manager_list");
+}
+
+function isElementVisible(element) {
+    if (!element?.isConnected) return false;
+    if (element.offsetParent) return true;
+    if (typeof element.checkVisibility === "function") return element.checkVisibility();
+    return false;
+}
+
+function isPromptManagerVisible() {
+    return isElementVisible(getPromptManagerList());
+}
+
+function scheduleCatalogCacheReset() {
+    if (catalogCacheScheduled) return;
+    catalogCacheScheduled = true;
+    queueMicrotask(() => {
+        catalogCacheScheduled = false;
+        nativeCatalogCache = null;
+        toggleableCatalogCache = null;
+    });
+}
+
 function getNativePromptCatalog() {
+    if (nativeCatalogCache) return nativeCatalogCache;
+    const catalog = computeNativePromptCatalog();
+    nativeCatalogCache = catalog;
+    scheduleCatalogCacheReset();
+    return catalog;
+}
+
+function getToggleableNativePromptCatalog() {
+    if (toggleableCatalogCache) return toggleableCatalogCache;
+    const catalog = computeToggleableNativePromptCatalog();
+    toggleableCatalogCache = catalog;
+    scheduleCatalogCacheReset();
+    return catalog;
+}
+
+function computeNativePromptCatalog() {
     const context = getContext();
     const settings = context?.chatCompletionSettings;
     if (context?.mainApi !== "openai" || !settings || !Array.isArray(settings.prompts)) return [];
@@ -518,9 +574,11 @@ function getNativePromptCatalog() {
         .sort((left, right) => left.order - right.order || left.name.localeCompare(right.name));
 }
 
-function getToggleableNativePromptCatalog() {
+function computeToggleableNativePromptCatalog() {
     const catalog = getNativePromptCatalog().filter((prompt) => prompt.attached && !prompt.marker);
-    const renderedToggleIds = new Set([...document.querySelectorAll("#completion_prompt_manager_list [data-pm-identifier] .prompt-manager-toggle-action")].map((toggle) => toggle.closest("[data-pm-identifier]")?.dataset.pmIdentifier).filter(Boolean));
+    const list = getPromptManagerList();
+    if (!list) return catalog;
+    const renderedToggleIds = new Set([...list.querySelectorAll("[data-pm-identifier] .prompt-manager-toggle-action")].map((toggle) => toggle.closest("[data-pm-identifier]")?.dataset.pmIdentifier).filter(Boolean));
     return renderedToggleIds.size > 0 ? catalog.filter((prompt) => renderedToggleIds.has(prompt.identifier)) : catalog;
 }
 
@@ -540,11 +598,28 @@ function refreshOpenPromptInspector() {
     const inspectArea = document.getElementById("completion_prompt_manager_popup_inspect");
     if (!popup?.classList.contains("openDrawer") || inspectArea?.style.display === "none") return;
 
-    const row = [...document.querySelectorAll("#completion_prompt_manager_list [data-pm-identifier]")].find((item) => item.dataset.pmIdentifier === inspectedPromptIdentifier);
-    row?.querySelector(".prompt-manager-inspect-action")?.click();
+    findPromptManagerRow(inspectedPromptIdentifier)?.querySelector(".prompt-manager-inspect-action")?.click();
+}
+
+function escapeAttributeValue(value) {
+    return String(value).replace(/[\\"]/g, "\\$&");
+}
+
+function findPromptManagerRow(identifier) {
+    const list = getPromptManagerList();
+    if (!list || !identifier) return null;
+    return list.querySelector(`[data-pm-identifier="${escapeAttributeValue(identifier)}"]`);
 }
 
 function handlePromptInspectorClick(event) {
+    if (nativePromptRenderPending) {
+        setTimeout(flushPendingNativePromptRender, 0);
+        setTimeout(flushPendingNativePromptRender, 350);
+    }
+    if (settingsEditorDirty) {
+        setTimeout(flushPendingSettingsRender, 0);
+        setTimeout(flushPendingSettingsRender, 350);
+    }
     const inspectAction = event.target.closest?.(".prompt-manager-inspect-action");
     if (inspectAction) {
         inspectedPromptIdentifier = inspectAction.closest("[data-pm-identifier]")?.dataset.pmIdentifier ?? "";
@@ -556,7 +631,7 @@ function handlePromptInspectorClick(event) {
 }
 
 function reflectNativePromptState(identifier, enabled) {
-    const row = [...document.querySelectorAll("#completion_prompt_manager_list [data-pm-identifier]")].find((item) => item.dataset.pmIdentifier === identifier);
+    const row = findPromptManagerRow(identifier);
     if (!row) return;
     row.classList.toggle("completion_prompt_manager_prompt_disabled", !enabled);
     const toggle = row.querySelector(".prompt-manager-toggle-action");
@@ -566,9 +641,8 @@ function reflectNativePromptState(identifier, enabled) {
 
 function reflectSettingsPromptState(identifier, enabled) {
     if (!settingsContainer?.isConnected) return;
-    const rows = settingsContainer.querySelectorAll(".sb-prompt-option-row[data-prompt-identifier]");
+    const rows = settingsContainer.querySelectorAll(`.sb-prompt-option-row[data-prompt-identifier="${escapeAttributeValue(identifier)}"]`);
     for (const row of rows) {
-        if (row.dataset.promptIdentifier !== identifier) continue;
         const state = row.querySelector(".sb-prompt-state-icon");
         state?.classList.toggle("sb-prompt-state-icon-on", enabled);
         const icon = state?.querySelector("i");
@@ -579,29 +653,114 @@ function reflectSettingsPromptState(identifier, enabled) {
     }
 }
 
+const SETTLE_RENDER_DELAY = 1200;
+
+/**
+ * /pm-render has two very different costs. `refresh=false` just repaints the prompt manager
+ * list. `refresh=true` additionally runs promptManager.tryGenerate(), which is a full dry-run
+ * Generate: world info, macro substitution and tokenisation of every enabled prompt. That
+ * second one is what makes presets with many active toggles feel sluggish.
+ *
+ * So the interactive path takes the cheap render immediately, and the expensive one runs once
+ * after the user stops changing things, purely to settle the token counters.
+ */
 function scheduleNativePromptRender() {
     nativePromptRenderPending = true;
-    if (nativePromptRenderInFlight) return;
-    clearTimeout(nativePromptRenderTimer);
+    if (!isPromptManagerVisible()) {
+        clearTimeout(nativePromptRenderTimer);
+        nativePromptRenderTimer = null;
+        clearTimeout(nativePromptSettleTimer);
+        nativePromptSettleTimer = null;
+        return;
+    }
+    scheduleLightPromptRender();
+    scheduleSettlePromptRender();
+}
+
+function scheduleLightPromptRender() {
+    if (nativePromptRenderTimer) return;
     nativePromptRenderTimer = setTimeout(() => {
         nativePromptRenderTimer = null;
-        nativePromptRenderPending = false;
-        nativePromptRenderInFlight = true;
-        nativePromptSyncChain = nativePromptSyncChain
-            .catch(() => undefined)
-            .then(async () => {
-                const context = getContext();
-                const execute = context?.executeSlashCommandsWithOptions ?? context?.executeSlashCommands;
-                if (typeof execute !== "function") throw new Error("Slash command executor is unavailable.");
-                await execute("/pm-render refresh=true");
-            })
-            .catch((error) => {
-                nativePromptRenderInFlight = false;
-                console.error("[Switch Binder] Could not refresh the prompt manager.", error);
-                notify("error", "Prompt List를 새로 계산하지 못했습니다.");
-                if (nativePromptRenderPending) scheduleNativePromptRender();
-            });
+        runPromptManagerRender(false);
     }, 24);
+}
+
+function scheduleSettlePromptRender() {
+    clearTimeout(nativePromptSettleTimer);
+    nativePromptSettleTimer = setTimeout(() => {
+        nativePromptSettleTimer = null;
+        runSettlePromptRender();
+    }, SETTLE_RENDER_DELAY);
+}
+
+function runSettlePromptRender() {
+    if (nativePromptRenderInFlight || !isPromptManagerVisible()) return;
+    nativePromptRenderPending = false;
+    nativePromptRenderInFlight = true;
+    armNativePromptRenderWatchdog();
+    runPromptManagerRender(true);
+}
+
+function runPromptManagerRender(withDryRun) {
+    if (!withDryRun) {
+        if (lightRenderInFlight) {
+            lightRenderPending = true;
+            return nativePromptSyncChain;
+        }
+        lightRenderInFlight = true;
+    }
+    suppressCatalogSync = true;
+    nativePromptSyncChain = nativePromptSyncChain
+        .catch(() => undefined)
+        .then(async () => {
+            const context = getContext();
+            const execute = context?.executeSlashCommandsWithOptions ?? context?.executeSlashCommands;
+            if (typeof execute !== "function") throw new Error("Slash command executor is unavailable.");
+            await execute(`/pm-render refresh=${withDryRun ? "true" : "false"}`);
+        })
+        .catch((error) => {
+            console.error("[Switch Binder] Could not refresh the prompt manager.", error);
+            if (!withDryRun) return;
+            releaseNativePromptRenderLock();
+            notify("error", "Prompt List를 새로 계산하지 못했습니다.");
+            if (nativePromptRenderPending) scheduleSettlePromptRender();
+        })
+        .finally(() => {
+            if (!withDryRun) {
+                lightRenderInFlight = false;
+                if (lightRenderPending) {
+                    lightRenderPending = false;
+                    scheduleLightPromptRender();
+                }
+            }
+            setTimeout(() => {
+                suppressCatalogSync = false;
+            }, 100);
+        });
+    return nativePromptSyncChain;
+}
+
+function armNativePromptRenderWatchdog() {
+    clearTimeout(nativePromptRenderWatchdog);
+    nativePromptRenderWatchdog = setTimeout(() => {
+        nativePromptRenderWatchdog = null;
+        if (!nativePromptRenderInFlight) return;
+        console.warn("[Switch Binder] The prompt manager never reported a finished render; releasing the lock.");
+        nativePromptRenderInFlight = false;
+        if (nativePromptRenderPending) scheduleSettlePromptRender();
+    }, 8000);
+}
+
+function releaseNativePromptRenderLock() {
+    clearTimeout(nativePromptRenderWatchdog);
+    nativePromptRenderWatchdog = null;
+    nativePromptRenderInFlight = false;
+}
+
+function flushPendingNativePromptRender() {
+    if (!nativePromptRenderPending || nativePromptRenderTimer || nativePromptSettleTimer) return;
+    if (!isPromptManagerVisible()) return;
+    scheduleNativePromptRender();
 }
 
 function queueNativePromptSync(variables = currentDefinition.variables) {
@@ -620,6 +779,8 @@ function queueNativePromptSync(variables = currentDefinition.variables) {
     }
 
     const orderEntries = new Map(getNativePromptOrder(settings).map((entry) => [entry.identifier, entry]));
+    const promptListPresent = Boolean(getPromptManagerList());
+    const settingsAttached = Boolean(settingsContainer?.isConnected);
     let settingsChanged = false;
     for (const [identifier, enabled] of desired) {
         const entry = orderEntries.get(identifier);
@@ -628,8 +789,8 @@ function queueNativePromptSync(variables = currentDefinition.variables) {
             entry.enabled = enabled;
             settingsChanged = true;
         }
-        reflectNativePromptState(identifier, enabled);
-        reflectSettingsPromptState(identifier, enabled);
+        if (promptListPresent) reflectNativePromptState(identifier, enabled);
+        if (settingsAttached) reflectSettingsPromptState(identifier, enabled);
     }
     if (settingsChanged) context.saveSettingsDebounced?.();
 
@@ -724,6 +885,19 @@ function persistDefinition({announce = false} = {}) {
     const snapshot = normalizeDefinition(cloneData(currentDefinition));
     const presetKeyAtRequest = currentPresetKey;
     const presetNameAtRequest = currentPresetName;
+
+    let payload = "";
+    try {
+        payload = JSON.stringify(snapshot);
+    } catch {
+        payload = "";
+    }
+    if (payload && payload === lastPersistedPayload && presetKeyAtRequest === lastPersistedKey) {
+        setSaveStatus(`“${presetNameAtRequest}” 프롬프트에 저장됨`);
+        if (announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
+        return saveChain;
+    }
+
     setSaveStatus("저장 중…");
 
     saveChain = saveChain
@@ -735,12 +909,16 @@ function persistDefinition({announce = false} = {}) {
                 path: MODULE_NAME,
                 value: snapshot,
             });
+            lastPersistedPayload = payload;
+            lastPersistedKey = presetKeyAtRequest;
             if (currentPresetKey === presetKeyAtRequest) {
                 setSaveStatus(`“${presetNameAtRequest}” 프롬프트에 저장됨`);
                 if (announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
             }
         })
         .catch((error) => {
+            lastPersistedPayload = "";
+            lastPersistedKey = "";
             console.error("[Switch Binder] Could not save preset definition.", error);
             if (currentPresetKey === presetKeyAtRequest) setSaveStatus("저장 실패");
             notify("error", "현재 프롬프트에 변수 설정을 저장하지 못했습니다.");
@@ -917,6 +1095,8 @@ async function copyDefinitionToPreset() {
 
 function loadCurrentPreset() {
     activeFavoriteId = '';
+    lastPersistedPayload = "";
+    lastPersistedKey = "";
     const revision = ++loadRevision;
     importWarnings = [];
     const info = getPresetInfo();
@@ -940,6 +1120,7 @@ function loadCurrentPreset() {
 
     refreshMacros();
     ensurePromptCatalogObserver();
+    ensureSettingsPlacementObserver();
     renderSettingsEditor();
     renderRuntimePanel();
     updateRuntimeButton();
@@ -1486,9 +1667,7 @@ function renderPromptToggleEditor(variable, body) {
     searchWrap.append(search);
     const pickerList = document.createElement("div");
     pickerList.className = "sb-prompt-picker-list";
-    const used = new Set(variable.promptOptions.map((option) => option.promptIdentifier));
-    const usedByOtherVariables = new Set(currentDefinition.variables.filter((item) => item.id !== variable.id && item.promptToggleMode).flatMap((item) => item.promptOptions.map((option) => option.promptIdentifier)));
-    const available = getToggleableNativePromptCatalog().filter((prompt) => !used.has(prompt.identifier) && !usedByOtherVariables.has(prompt.identifier));
+    let available = [];
     const selected = new Set();
     const pickerRows = [];
     const footer = document.createElement("div");
@@ -1518,34 +1697,53 @@ function renderPromptToggleEditor(variable, body) {
         addSelected.disabled = selected.size === 0;
     };
 
-    for (const prompt of available) {
-        const row = document.createElement("label");
-        row.className = "sb-prompt-picker-row";
-        row.dataset.search = prompt.name.toLocaleLowerCase();
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.addEventListener("change", () => {
-            checkbox.checked ? selected.add(prompt.identifier) : selected.delete(prompt.identifier);
-            row.classList.toggle("sb-prompt-picker-row-selected", checkbox.checked);
-            updateSelection();
-        });
-        const state = document.createElement("span");
-        state.className = `sb-prompt-state-dot${prompt.enabled ? " sb-prompt-state-dot-on" : ""}`;
-        const copy = document.createElement("span");
-        copy.className = "sb-prompt-picker-copy";
-        const name = document.createElement("strong");
-        name.textContent = prompt.name;
-        copy.append(name);
-        row.append(checkbox, state, copy);
-        pickerRows.push(row);
-        pickerList.append(row);
-    }
-    if (available.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "sb-prompt-picker-empty";
-        empty.textContent = "추가할 수 있는 토글이 없습니다.";
-        pickerList.append(empty);
-    }
+    let pickerBuilt = false;
+    const buildPickerRows = () => {
+        if (pickerBuilt) return;
+        pickerBuilt = true;
+        const used = new Set(variable.promptOptions.map((option) => option.promptIdentifier));
+        const usedByOtherVariables = new Set(currentDefinition.variables.filter((item) => item.id !== variable.id && item.promptToggleMode).flatMap((item) => item.promptOptions.map((option) => option.promptIdentifier)));
+        available = getToggleableNativePromptCatalog().filter((prompt) => !used.has(prompt.identifier) && !usedByOtherVariables.has(prompt.identifier));
+
+        const fragment = document.createDocumentFragment();
+        for (const prompt of available) {
+            const row = document.createElement("label");
+            row.className = "sb-prompt-picker-row";
+            row.dataset.search = prompt.name.toLocaleLowerCase();
+            row.dataset.identifier = prompt.identifier;
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            const state = document.createElement("span");
+            state.className = `sb-prompt-state-dot${prompt.enabled ? " sb-prompt-state-dot-on" : ""}`;
+            const copy = document.createElement("span");
+            copy.className = "sb-prompt-picker-copy";
+            const name = document.createElement("strong");
+            name.textContent = prompt.name;
+            copy.append(name);
+            row.append(checkbox, state, copy);
+            pickerRows.push(row);
+            fragment.append(row);
+        }
+        if (available.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "sb-prompt-picker-empty";
+            empty.textContent = "추가할 수 있는 토글이 없습니다.";
+            fragment.append(empty);
+        }
+        pickerList.append(fragment);
+    };
+
+    pickerList.addEventListener("change", (event) => {
+        const checkbox = event.target;
+        if (!(checkbox instanceof HTMLInputElement) || checkbox.type !== "checkbox") return;
+        const row = checkbox.closest(".sb-prompt-picker-row");
+        const identifier = row?.dataset.identifier;
+        if (!identifier) return;
+        checkbox.checked ? selected.add(identifier) : selected.delete(identifier);
+        row.classList.toggle("sb-prompt-picker-row-selected", checkbox.checked);
+        updateSelection();
+    });
+
     search.addEventListener("input", () => {
         const query = search.value.trim().toLocaleLowerCase();
         for (const row of pickerRows) row.hidden = Boolean(query) && !row.dataset.search.includes(query);
@@ -1556,6 +1754,7 @@ function renderPromptToggleEditor(variable, body) {
     const addToggle = createActionButton(
         "토글 추가",
         () => {
+            buildPickerRows();
             picker.hidden = false;
             search.focus();
         },
@@ -1963,17 +2162,30 @@ function ensureSettingsUI() {
     return settingsContainer;
 }
 
+/**
+ * Watching document.body with subtree:true means every streamed message token produces
+ * mutation records for this observer. Once the anchor exists we only need to watch its
+ * direct parent, which is quiet.
+ */
 function ensureSettingsPlacementObserver() {
-    if (settingsPlacementObserver || !document.body) return;
+    if (!document.body) return;
+    const anchor = document.getElementById(SETTINGS_ANCHOR_ID);
+    const target = anchor?.parentElement ?? document.body;
+    if (settingsPlacementObserver && settingsPlacementTarget === target && target.isConnected) return;
+    settingsPlacementObserver?.disconnect();
+    settingsPlacementTarget = target;
     settingsPlacementObserver = new MutationObserver(() => {
-        const anchor = document.getElementById(SETTINGS_ANCHOR_ID);
-        if (!anchor) return;
-        const needsPlacement = !settingsContainer?.isConnected || settingsContainer.nextElementSibling !== anchor;
+        const currentAnchor = document.getElementById(SETTINGS_ANCHOR_ID);
+        if (!currentAnchor) return;
+        if (currentAnchor.parentElement && currentAnchor.parentElement !== settingsPlacementTarget) {
+            ensureSettingsPlacementObserver();
+        }
+        const needsPlacement = !settingsContainer?.isConnected || settingsContainer.nextElementSibling !== currentAnchor;
         if (!needsPlacement) return;
         ensureSettingsUI();
         renderSettingsEditor();
     });
-    settingsPlacementObserver.observe(document.body, {childList: true, subtree: true});
+    settingsPlacementObserver.observe(target, {childList: true, subtree: target === document.body});
 }
 
 function syncPromptToggleLabels() {
@@ -1995,12 +2207,13 @@ function syncPromptToggleLabels() {
 }
 
 function ensurePromptCatalogObserver() {
-    const list = document.getElementById("completion_prompt_manager_list");
+    const list = getPromptManagerList();
     if (!list) return;
     if (promptCatalogObserver && observedPromptCatalogList === list && list.isConnected) return;
     promptCatalogObserver?.disconnect();
     observedPromptCatalogList = list;
     promptCatalogObserver = new MutationObserver(() => {
+        if (suppressCatalogSync) return;
         clearTimeout(promptCatalogSyncTimer);
         promptCatalogSyncTimer = setTimeout(() => {
             if (!syncPromptToggleLabels()) return;
@@ -2009,7 +2222,7 @@ function ensurePromptCatalogObserver() {
             persistDefinition();
         }, 120);
     });
-    promptCatalogObserver.observe(list, {childList: true, subtree: true, characterData: true});
+    promptCatalogObserver.observe(list, {childList: true, subtree: true});
 }
 
 function renderSettingsWarnings() {
@@ -2024,9 +2237,38 @@ function renderSettingsWarnings() {
     }
 }
 
+/**
+ * Rebuilding every variable card costs O(variables x options) and the editor lives inside a
+ * collapsible drawer that is closed most of the time. Defer the work until it is on screen.
+ */
+function ensureSettingsVisibilityObserver(container) {
+    if (typeof IntersectionObserver !== "function") return false;
+    if (settingsVisibilityObserver && observedSettingsContainer === container && container.isConnected) return true;
+    settingsVisibilityObserver?.disconnect();
+    observedSettingsContainer = container;
+    settingsVisibilityObserver = new IntersectionObserver((entries) => {
+        if (!settingsEditorDirty) return;
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        renderSettingsEditor();
+    }, {rootMargin: "600px"});
+    settingsVisibilityObserver.observe(container);
+    return true;
+}
+
+function flushPendingSettingsRender() {
+    if (!settingsEditorDirty) return;
+    if (!isElementVisible(settingsContainer)) return;
+    renderSettingsEditor();
+}
+
 function renderSettingsEditor() {
     const container = ensureSettingsUI();
     if (!container) return;
+    if (ensureSettingsVisibilityObserver(container) && !isElementVisible(container)) {
+        settingsEditorDirty = true;
+        return;
+    }
+    settingsEditorDirty = false;
     const preset = container.querySelector("#prompt_controls_settings_preset");
     const addButton = container.querySelector("#prompt_controls_add");
     const copyTargetWrap = container.querySelector("#prompt_controls_copy_target_wrap");
@@ -2116,15 +2358,17 @@ function updateFavoriteButtonState() {
     const button = document.getElementById('prompt_controls_save_favorite');
     if (!button) return;
 
-    const snapshot = Object.fromEntries(
-        currentDefinition.variables.map(v => [v.id, cloneData(getRawValue(v))])
-    );
+    if (currentDefinition.favorites.length === 0) {
+        activeFavoriteId = '';
+        button.classList.remove('sb-action-favorited');
+        return;
+    }
 
-    const matchingFavorite = currentDefinition.favorites.find(favorite => {
-        return Object.keys(snapshot).every(key => 
-            JSON.stringify(snapshot[key]) === JSON.stringify(favorite.values[key])
-        );
-    });
+    const snapshot = currentDefinition.variables.map(v => [v.id, JSON.stringify(getRawValue(v))]);
+
+    const matchingFavorite = currentDefinition.favorites.find(favorite =>
+        snapshot.every(([id, value]) => value === JSON.stringify(favorite.values[id])),
+    );
 
     activeFavoriteId = matchingFavorite ? matchingFavorite.id : '';
 
@@ -2362,6 +2606,10 @@ function renderRuntimeFavorites(body) {
 
 function renderRuntimePanel() {
     const panel = ensureRuntimePanel();
+    if (!panel.classList.contains("sb-open")) {
+        updateFavoriteButtonState();
+        return;
+    }
     const preset = panel.querySelector("#prompt_controls_runtime_preset");
     const body = panel.querySelector("#prompt_controls_runtime_body");
     const reset = panel.querySelector("#prompt_controls_reset");
@@ -2528,9 +2776,18 @@ function positionRuntimePanel() {
     runtimePanel.style.maxHeight = `${Math.min(680, availableHeight)}px`;
 }
 
+function handleWindowResize() {
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        positionRuntimePanel();
+    });
+}
+
 function openRuntimePanel() {
-    renderRuntimePanel();
+    ensureRuntimePanel();
     runtimePanel.classList.add("sb-open");
+    renderRuntimePanel();
     runtimeButton?.setAttribute("aria-expanded", "true");
     positionRuntimePanel();
 }
@@ -2625,14 +2882,14 @@ function initialize() {
     });
     bindStEvent(events.CHAT_COMPLETION_PROMPT_READY, (eventData) => {
         if (!eventData?.dryRun) return;
-        nativePromptRenderInFlight = false;
+        releaseNativePromptRenderLock();
         refreshOpenPromptInspector();
-        if (nativePromptRenderPending) scheduleNativePromptRender();
+        if (nativePromptRenderPending) scheduleSettlePromptRender();
     });
     document.addEventListener("pointerdown", handleDocumentPointerDown);
     document.addEventListener("keydown", handleDocumentKeyDown);
     document.addEventListener("click", handlePromptInspectorClick, true);
-    window.addEventListener("resize", positionRuntimePanel);
+    window.addEventListener("resize", handleWindowResize);
     window.addEventListener("pagehide", cleanup, {once: true});
     loadCurrentPreset();
     console.log("[Switch Binder] Loaded.");
@@ -2654,6 +2911,12 @@ function cleanup() {
     promptCatalogObserver?.disconnect();
     promptCatalogObserver = null;
     observedPromptCatalogList = null;
+    settingsPlacementTarget = null;
+    suppressCatalogSync = false;
+    nativeCatalogCache = null;
+    toggleableCatalogCache = null;
+    lastPersistedPayload = "";
+    lastPersistedKey = "";
     clearTimeout(promptCatalogSyncTimer);
     const context = getContext();
     for (const {type, handler} of stEventBindings.splice(0)) {
@@ -2662,7 +2925,20 @@ function cleanup() {
     document.removeEventListener("pointerdown", handleDocumentPointerDown);
     document.removeEventListener("keydown", handleDocumentKeyDown);
     document.removeEventListener("click", handlePromptInspectorClick, true);
-    window.removeEventListener("resize", positionRuntimePanel);
+    window.removeEventListener("resize", handleWindowResize);
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
+    clearTimeout(nativePromptRenderWatchdog);
+    nativePromptRenderWatchdog = null;
+    clearTimeout(nativePromptSettleTimer);
+    nativePromptSettleTimer = null;
+    lightRenderInFlight = false;
+    lightRenderPending = false;
+    settingsVisibilityObserver?.disconnect();
+    settingsVisibilityObserver = null;
+    observedSettingsContainer = null;
+    runtimePanelDirty = false;
+    settingsEditorDirty = false;
     runtimePanel?.remove();
     runtimeButton?.remove();
     settingsContainer?.remove();

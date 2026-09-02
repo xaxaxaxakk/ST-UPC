@@ -1,8 +1,9 @@
 @font-face {
     font-family: "Pretendard";
     font-weight: 400;
-    src: url("https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard@main/Pretendard-Regular.woff2") format("woff");
+    src: url("https://cdn.jsdelivr.net/gh/fonts-archive/Pretendard@main/Pretendard-Regular.woff2") format("woff2");
     font-style: normal;
+    font-display: swap;
 }
 
 #prompt_controls_runtime_panel,
