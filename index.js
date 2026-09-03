@@ -1529,110 +1529,129 @@ function renderSelectionEditor(variable, body) {
     body.append(section);
 }
 
+const PROMPT_PICKER_VISIBLE_LIMIT = 80;
+const PROMPT_PICKER_SEARCH_DEBOUNCE = 110;
+
+/**
+ * Adding or removing a toggle used to call renderSettingsEditor(), which rebuilds every variable
+ * card from scratch and therefore destroys the picker the user is standing in. Everything here
+ * updates in place instead: the option list and the picker rows each re-render on their own, so
+ * the picker survives an add and the user can keep registering toggles without reopening it.
+ */
 function renderPromptToggleEditor(variable, body) {
-    const section = createEditorSection("fa-toggle-on", "토글 제어", `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 선택한 항목만 ON으로 유지됩니다.`);
+    const describe = () => `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 선택한 항목만 ON으로 유지됩니다.`;
+    const section = createEditorSection("fa-toggle-on", "토글 제어", describe());
     section.classList.add("sb-prompt-toggle-section");
-    const catalog = getNativePromptCatalog();
-    const catalogById = new Map(catalog.map((prompt) => [prompt.identifier, prompt]));
+    const sectionDescription = section.querySelector(".sb-card-section-description");
     const list = document.createElement("div");
     list.className = "sb-prompt-option-list";
 
-    if (variable.promptOptions.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "sb-prompt-option-empty";
-        empty.append(createIcon("fa-toggle-off"));
-        const copy = document.createElement("div");
-        const title = document.createElement("strong");
-        title.textContent = "등록된 토글이 없습니다";
-        const description = document.createElement("span");
-        description.textContent = "아래 토글 추가 버튼에서 현재 프롬프트의 항목을 선택하세요.";
-        copy.append(title, description);
-        empty.append(copy);
-        list.append(empty);
-    }
+    function renderOptionRows() {
+        if (sectionDescription) sectionDescription.textContent = describe();
+        const catalogById = new Map(getNativePromptCatalog().map((prompt) => [prompt.identifier, prompt]));
+        list.replaceChildren();
 
-    for (const option of variable.promptOptions) {
-        const prompt = catalogById.get(option.promptIdentifier);
-        const nativeName = prompt?.name ?? option.label;
-        const row = document.createElement("div");
-        row.className = "sb-prompt-option-row";
-        row.dataset.promptIdentifier = option.promptIdentifier;
-        const handle = document.createElement("span");
-        handle.className = "sb-option-index sb-drag-handle";
-        handle.style.touchAction = "none";
-        handle.append(createIcon("fa-grip-vertical"));
-        const icon = document.createElement("span");
-        icon.className = `sb-prompt-state-icon${prompt?.enabled ? " sb-prompt-state-icon-on" : ""}`;
-        icon.append(createIcon(prompt?.enabled ? "fa-toggle-on" : "fa-toggle-off"));
-        const copy = document.createElement("div");
-        copy.className = "sb-prompt-option-copy";
-        const name = document.createElement("strong");
-        name.textContent = nativeName;
-        name.title = `실제 토글 이름: ${nativeName}`;
-        const displayLabelInput = createTextInput(option.displayLabel, {
-            placeholder: `표시용 라벨 · ${nativeName}`,
-            className: "sb-editor-input sb-prompt-display-label-input",
-        });
-        displayLabelInput.maxLength = 300;
-        displayLabelInput.setAttribute("aria-label", `${nativeName} 표시용 라벨`);
-        displayLabelInput.title = "런타임 패널에 표시할 이름입니다. 비워두면 실제 토글 이름을 사용합니다.";
-        displayLabelInput.addEventListener("change", () => {
-            option.displayLabel = displayLabelInput.value.slice(0, 300).trim();
-            displayLabelInput.value = option.displayLabel;
-            renderRuntimePanel();
-            persistDefinition();
-        });
-        const meta = document.createElement("span");
-        meta.className = "sb-prompt-state-text";
-        meta.textContent =
-            prompt ?
-                prompt.enabled ?
-                    "현재 ON"
-                :   "현재 OFF"
-            :   "현재 프롬프트에서 찾을 수 없음";
-        copy.append(name, displayLabelInput, meta);
+        if (variable.promptOptions.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "sb-prompt-option-empty";
+            empty.append(createIcon("fa-toggle-off"));
+            const copy = document.createElement("div");
+            const title = document.createElement("strong");
+            title.textContent = "등록된 토글이 없습니다";
+            const description = document.createElement("span");
+            description.textContent = "아래 토글 추가 버튼에서 현재 프롬프트의 항목을 선택하세요.";
+            copy.append(title, description);
+            empty.append(copy);
+            list.append(empty);
+            return;
+        }
 
-        const defaultLabel = document.createElement("label");
-        defaultLabel.className = "sb-default-picker";
-        const defaultInput = document.createElement("input");
-        defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
-        defaultInput.name = `sb-prompt-default-${variable.id}`;
-        defaultInput.checked = variable.type === "multi" ? variable.promptDefaultValue.includes(option.id) : variable.promptDefaultValue === option.id;
-        defaultInput.addEventListener("change", () => {
-            if (variable.type === "multi") {
-                const defaults = new Set(variable.promptDefaultValue);
-                defaultInput.checked ? defaults.add(option.id) : defaults.delete(option.id);
-                variable.promptDefaultValue = [...defaults];
-            } else {
-                variable.promptDefaultValue = option.id;
-            }
-            persistDefinition();
-            renderRuntimePanel();
-        });
-        defaultLabel.append(defaultInput, createIcon("fa-star"));
-        const defaultText = document.createElement("span");
-        defaultText.textContent = "기본";
-        defaultLabel.append(defaultText);
-
-        const remove = createActionButton(
-            "등록 제거",
-            () => {
-                variable.promptOptions = variable.promptOptions.filter((item) => item.id !== option.id);
-                variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
-                renderSettingsEditor();
+        const fragment = document.createDocumentFragment();
+        for (const option of variable.promptOptions) {
+            const prompt = catalogById.get(option.promptIdentifier);
+            const nativeName = prompt?.name ?? option.label;
+            const row = document.createElement("div");
+            row.className = "sb-prompt-option-row";
+            row.dataset.promptIdentifier = option.promptIdentifier;
+            const handle = document.createElement("span");
+            handle.className = "sb-option-index sb-drag-handle";
+            handle.style.touchAction = "none";
+            handle.append(createIcon("fa-grip-vertical"));
+            const icon = document.createElement("span");
+            icon.className = `sb-prompt-state-icon${prompt?.enabled ? " sb-prompt-state-icon-on" : ""}`;
+            icon.append(createIcon(prompt?.enabled ? "fa-toggle-on" : "fa-toggle-off"));
+            const copy = document.createElement("div");
+            copy.className = "sb-prompt-option-copy";
+            const name = document.createElement("strong");
+            name.textContent = nativeName;
+            name.title = `실제 토글 이름: ${nativeName}`;
+            const displayLabelInput = createTextInput(option.displayLabel, {
+                placeholder: `표시용 라벨 · ${nativeName}`,
+                className: "sb-editor-input sb-prompt-display-label-input",
+            });
+            displayLabelInput.maxLength = 300;
+            displayLabelInput.setAttribute("aria-label", `${nativeName} 표시용 라벨`);
+            displayLabelInput.title = "런타임 패널에 표시할 이름입니다. 비워두면 실제 토글 이름을 사용합니다.";
+            displayLabelInput.addEventListener("change", () => {
+                option.displayLabel = displayLabelInput.value.slice(0, 300).trim();
+                displayLabelInput.value = option.displayLabel;
                 renderRuntimePanel();
-                queueNativePromptSync([variable]);
                 persistDefinition();
-            },
-            "sb-action-danger sb-prompt-option-remove",
-            "fa-xmark",
-        );
-        row.append(handle, icon, copy, defaultLabel, remove);
-        list.append(row);
+            });
+            const meta = document.createElement("span");
+            meta.className = "sb-prompt-state-text";
+            meta.textContent =
+                prompt ?
+                    prompt.enabled ?
+                        "현재 ON"
+                    :   "현재 OFF"
+                :   "현재 프롬프트에서 찾을 수 없음";
+            copy.append(name, displayLabelInput, meta);
+
+            const defaultLabel = document.createElement("label");
+            defaultLabel.className = "sb-default-picker";
+            const defaultInput = document.createElement("input");
+            defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
+            defaultInput.name = `sb-prompt-default-${variable.id}`;
+            defaultInput.checked = variable.type === "multi" ? variable.promptDefaultValue.includes(option.id) : variable.promptDefaultValue === option.id;
+            defaultInput.addEventListener("change", () => {
+                if (variable.type === "multi") {
+                    const defaults = new Set(variable.promptDefaultValue);
+                    defaultInput.checked ? defaults.add(option.id) : defaults.delete(option.id);
+                    variable.promptDefaultValue = [...defaults];
+                } else {
+                    variable.promptDefaultValue = option.id;
+                }
+                persistDefinition();
+                renderRuntimePanel();
+            });
+            defaultLabel.append(defaultInput, createIcon("fa-star"));
+            const defaultText = document.createElement("span");
+            defaultText.textContent = "기본";
+            defaultLabel.append(defaultText);
+
+            const remove = createActionButton(
+                "등록 제거",
+                () => {
+                    variable.promptOptions = variable.promptOptions.filter((item) => item.id !== option.id);
+                    variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
+                    renderOptionRows();
+                    refreshPickerAvailability();
+                    renderRuntimePanel();
+                    queueNativePromptSync([variable]);
+                    persistDefinition();
+                },
+                "sb-action-danger sb-prompt-option-remove",
+                "fa-xmark",
+            );
+            row.append(handle, icon, copy, defaultLabel, remove);
+            fragment.append(row);
+        }
+        list.append(fragment);
     }
 
-    attachDragReorder(list, variable.promptOptions, ".sb-prompt-option-row", () => {
-        renderSettingsEditor();
+    attachDragReorder(list, () => variable.promptOptions, ".sb-prompt-option-row", () => {
+        renderOptionRows();
         renderRuntimePanel();
         queueNativePromptSync([variable]);
         persistDefinition();
@@ -1653,6 +1672,7 @@ function renderPromptToggleEditor(variable, body) {
         "닫기",
         () => {
             picker.hidden = true;
+            pickerStale = true;
         },
         "sb-prompt-picker-close",
         "fa-xmark",
@@ -1667,52 +1687,58 @@ function renderPromptToggleEditor(variable, body) {
     searchWrap.append(search);
     const pickerList = document.createElement("div");
     pickerList.className = "sb-prompt-picker-list";
-    let available = [];
-    const selected = new Set();
-    const pickerRows = [];
     const footer = document.createElement("div");
     footer.className = "sb-prompt-picker-footer";
     const selectionCount = document.createElement("span");
     selectionCount.textContent = "0개 선택";
-    const addSelected = createActionButton(
-        "선택한 토글 추가",
-        () => {
-            const additions = available
-                .filter((prompt) => selected.has(prompt.identifier))
-                .map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name, displayLabel: ""}));
-            if (additions.length === 0) return;
-            variable.promptOptions.push(...additions);
-            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
-            renderSettingsEditor();
-            renderRuntimePanel();
-            queueNativePromptSync([variable]);
-            persistDefinition();
-        },
-        "sb-action-primary",
-        "fa-plus",
-    );
-    addSelected.disabled = true;
+
+    let available = [];
+    let pickerStale = true;
+    let searchTimer = null;
+    const selected = new Set();
+
     const updateSelection = () => {
         selectionCount.textContent = `${selected.size}개 선택`;
         addSelected.disabled = selected.size === 0;
     };
 
-    let pickerBuilt = false;
-    const buildPickerRows = () => {
-        if (pickerBuilt) return;
-        pickerBuilt = true;
+    /**
+     * The candidate list depends on what every other toggle variable has already claimed, so it
+     * is recomputed whenever the picker opens or this variable's registrations change.
+     */
+    function computeAvailable() {
         const used = new Set(variable.promptOptions.map((option) => option.promptIdentifier));
         const usedByOtherVariables = new Set(currentDefinition.variables.filter((item) => item.id !== variable.id && item.promptToggleMode).flatMap((item) => item.promptOptions.map((option) => option.promptIdentifier)));
-        available = getToggleableNativePromptCatalog().filter((prompt) => !used.has(prompt.identifier) && !usedByOtherVariables.has(prompt.identifier));
+        available = getToggleableNativePromptCatalog()
+            .filter((prompt) => !used.has(prompt.identifier) && !usedByOtherVariables.has(prompt.identifier))
+            .map((prompt) => ({...prompt, search: prompt.name.toLocaleLowerCase()}));
+        const availableIds = new Set(available.map((prompt) => prompt.identifier));
+        for (const identifier of [...selected]) {
+            if (!availableIds.has(identifier)) selected.delete(identifier);
+        }
+        updateSelection();
+    }
 
+    /**
+     * Presets routinely carry several hundred prompts. Rendering every candidate and then
+     * flipping `hidden` on all of them per keystroke thrashed layout inside the scroll container,
+     * so only the first PROMPT_PICKER_VISIBLE_LIMIT matches are ever in the DOM. Selection state
+     * lives in `selected` rather than in the rows, so it survives a re-render.
+     */
+    function renderPickerRows() {
+        const query = search.value.trim().toLocaleLowerCase();
+        const matches = query ? available.filter((prompt) => prompt.search.includes(query)) : available;
+        const shown = matches.slice(0, PROMPT_PICKER_VISIBLE_LIMIT);
         const fragment = document.createDocumentFragment();
-        for (const prompt of available) {
+
+        for (const prompt of shown) {
+            const isSelected = selected.has(prompt.identifier);
             const row = document.createElement("label");
-            row.className = "sb-prompt-picker-row";
-            row.dataset.search = prompt.name.toLocaleLowerCase();
+            row.className = `sb-prompt-picker-row${isSelected ? " sb-prompt-picker-row-selected" : ""}`;
             row.dataset.identifier = prompt.identifier;
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
+            checkbox.checked = isSelected;
             const state = document.createElement("span");
             state.className = `sb-prompt-state-dot${prompt.enabled ? " sb-prompt-state-dot-on" : ""}`;
             const copy = document.createElement("span");
@@ -1721,17 +1747,33 @@ function renderPromptToggleEditor(variable, body) {
             name.textContent = prompt.name;
             copy.append(name);
             row.append(checkbox, state, copy);
-            pickerRows.push(row);
             fragment.append(row);
         }
-        if (available.length === 0) {
+
+        if (matches.length === 0) {
             const empty = document.createElement("div");
             empty.className = "sb-prompt-picker-empty";
-            empty.textContent = "추가할 수 있는 토글이 없습니다.";
+            empty.textContent = available.length === 0 ? "추가할 수 있는 토글이 없습니다." : "검색 결과가 없습니다.";
             fragment.append(empty);
+        } else if (matches.length > shown.length) {
+            const note = document.createElement("div");
+            note.className = "sb-prompt-picker-empty";
+            note.textContent = `${matches.length}개 중 ${shown.length}개 표시 · 검색어로 좁혀보세요.`;
+            fragment.append(note);
         }
-        pickerList.append(fragment);
-    };
+
+        pickerList.replaceChildren(fragment);
+        pickerList.scrollTop = 0;
+    }
+
+    function refreshPickerAvailability() {
+        if (picker.hidden) {
+            pickerStale = true;
+            return;
+        }
+        computeAvailable();
+        renderPickerRows();
+    }
 
     pickerList.addEventListener("change", (event) => {
         const checkbox = event.target;
@@ -1745,22 +1787,52 @@ function renderPromptToggleEditor(variable, body) {
     });
 
     search.addEventListener("input", () => {
-        const query = search.value.trim().toLocaleLowerCase();
-        for (const row of pickerRows) row.hidden = Boolean(query) && !row.dataset.search.includes(query);
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(renderPickerRows, PROMPT_PICKER_SEARCH_DEBOUNCE);
     });
+
+    const addSelected = createActionButton(
+        "선택한 토글 추가",
+        () => {
+            const additions = available
+                .filter((prompt) => selected.has(prompt.identifier))
+                .map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name, displayLabel: ""}));
+            if (additions.length === 0) return;
+            variable.promptOptions.push(...additions);
+            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
+            selected.clear();
+            renderOptionRows();
+            computeAvailable();
+            renderPickerRows();
+            renderRuntimePanel();
+            queueNativePromptSync([variable]);
+            persistDefinition();
+        },
+        "sb-action-primary",
+        "fa-plus",
+    );
+    addSelected.disabled = true;
     footer.append(selectionCount, addSelected);
     picker.append(pickerHeader, searchWrap, pickerList, footer);
 
     const addToggle = createActionButton(
         "토글 추가",
         () => {
-            buildPickerRows();
+            if (!picker.hidden) {
+                search.focus();
+                return;
+            }
+            computeAvailable();
+            pickerStale = false;
+            renderPickerRows();
             picker.hidden = false;
             search.focus();
         },
         "sb-action-primary sb-open-prompt-picker",
         "fa-plus",
     );
+
+    renderOptionRows();
     section.append(list, addToggle, picker);
     body.append(section);
 }
@@ -2071,7 +2143,7 @@ function ensureSettingsUI() {
     settingsContainer.id = SETTINGS_ID;
     settingsContainer.className = "sb-settings-root";
     settingsContainer.innerHTML = `
-        <details class="sb-settings-shell" open>
+        <details class="sb-settings-shell">
             <summary class="sb-settings-header">
                 <span class="sb-settings-mark"><i class="fa-solid fa-sliders"></i></span>
                 <span class="sb-settings-heading">
@@ -2114,6 +2186,9 @@ function ensureSettingsUI() {
             </div>
         </details>`;
     anchor.before(settingsContainer);
+    settingsContainer.querySelector(".sb-settings-shell")?.addEventListener("toggle", () => {
+        setTimeout(flushPendingSettingsRender, 0);
+    });
     settingsContainer.querySelector("#prompt_controls_reload")?.addEventListener("click", loadCurrentPreset);
     settingsContainer.querySelector("#prompt_controls_theme_toggle")?.addEventListener("click", toggleTheme);
     settingsContainer.querySelector("#prompt_controls_add")?.addEventListener("click", createVariable);
