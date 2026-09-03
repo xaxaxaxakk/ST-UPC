@@ -164,11 +164,7 @@ body.sb-theme-dark #prompt_controls_settings {
 }
 
 .sb-runtime-body {
-    display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-    gap: 12px;
-    min-height: 0;
+    display: block;
     padding: 14px;
     overflow: auto;
     scrollbar-width: thin;
@@ -179,6 +175,7 @@ body.sb-theme-dark #prompt_controls_settings {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    margin-top: 20px;
 }
 
 .sb-runtime-field-pinned {
@@ -1476,6 +1473,9 @@ body.sb-theme-dark #prompt_controls_settings {
     &:empty {
         display: none
     }
+}
+.sb-runtime-favorites:empty + .sb-runtime-field {
+    margin-top: 0 !important;
 }
 .sb-runtime-favorites::-webkit-scrollbar {
     height: 15px !important;
