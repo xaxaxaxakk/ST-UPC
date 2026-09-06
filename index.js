@@ -186,8 +186,9 @@ function normalizePromptGroup(raw, index, promptOptions) {
 }
 
 function normalizeGroupSelection(rawSelection, groups, single = false) {
+    const groupList = Array.isArray(groups) ? groups : [];
     const requested = new Set((Array.isArray(rawSelection) ? rawSelection : []).map((value) => asString(value, 160)));
-    const selected = groups.filter((group) => requested.has(group.id)).map((group) => group.id);
+    const selected = groupList.filter((group) => requested.has(group.id)).map((group) => group.id);
     return single ? selected.slice(0, 1) : selected;
 }
 
@@ -1223,12 +1224,14 @@ function createVariable() {
         runtimeHidden: false,
         defaultValue: firstOption.id,
         promptDefaultValue: "",
+        groupMode: "multi",
         separator: "\n",
         placeholder: "",
         onValue: "",
         offValue: "",
         options: [firstOption, secondOption],
         promptOptions: [],
+        promptGroups: [],
     };
     currentDefinition.variables.push(variable);
     expandedVariableIds.add(variable.id);
@@ -2942,6 +2945,37 @@ function renderSinglePromptToggle(variable, option, field, promptCatalog) {
     field.append(row);
 }
 
+function renderSingleGroupToggle(variable, group, field) {
+    const row = document.createElement("div");
+    row.className = "sb-switch-row";
+    const stateCopy = document.createElement("span");
+    stateCopy.className = "sb-switch-state-copy";
+    const groupLabel = document.createElement("span");
+    groupLabel.className = "sb-switch-option-label";
+    groupLabel.textContent = group.label;
+    groupLabel.title = group.label;
+    const stateText = document.createElement("span");
+    stateText.className = "sb-switch-state-text";
+    const isOn = getRawValue(variable).includes(group.id);
+    stateText.textContent = isOn ? "ON" : "OFF";
+    const switchLabel = document.createElement("label");
+    switchLabel.className = "sb-switch";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = isOn;
+    const track = document.createElement("span");
+    track.className = "sb-switch-track";
+    checkbox.addEventListener("change", () => {
+        const next = checkbox.checked ? [group.id] : [];
+        if (setRawValue(variable, next)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
+        else checkbox.checked = !checkbox.checked;
+    });
+    switchLabel.append(checkbox, track);
+    stateCopy.append(groupLabel, stateText);
+    row.append(stateCopy, switchLabel);
+    field.append(row);
+}
+
 function renderRuntimePromptGroups(variable, field) {
     if (variable.promptGroups.length === 0) {
         const message = document.createElement("div");
@@ -2951,44 +2985,41 @@ function renderRuntimePromptGroups(variable, field) {
         return;
     }
 
+    if (variable.promptGroups.length === 1) {
+        renderSingleGroupToggle(variable, variable.promptGroups[0], field);
+        return;
+    }
+
+    const single = isSingleGroupMode(variable);
+    const raw = getRawValue(variable);
     const list = document.createElement("div");
-    list.className = "sb-group-switch-list";
+    list.className = "sb-choice-list";
     for (const group of variable.promptGroups) {
-        const active = getRawValue(variable).includes(group.id);
-        const row = document.createElement("div");
-        row.className = "sb-switch-row";
-        const copy = document.createElement("span");
-        copy.className = "sb-switch-state-copy";
-        const groupLabel = document.createElement("span");
-        groupLabel.className = "sb-switch-option-label";
-        groupLabel.textContent = group.label;
-        groupLabel.title = group.label;
-        copy.append(groupLabel);
-        const stateText = document.createElement("span");
-        stateText.className = "sb-switch-state-text";
-        stateText.textContent = active ? "ON" : "OFF";
-        const switchLabel = document.createElement("label");
-        switchLabel.className = "sb-switch";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = active;
-        const track = document.createElement("span");
-        track.className = "sb-switch-track";
-        checkbox.addEventListener("change", () => {
-            if (isSingleGroupMode(variable)) {
-                if (setRawValue(variable, checkbox.checked ? [group.id] : [])) renderRuntimePanel();
-                else checkbox.checked = !checkbox.checked;
+        const choice = document.createElement("label");
+        choice.className = "sb-choice";
+        const input = document.createElement("input");
+        input.type = single ? "radio" : "checkbox";
+        input.name = `sb-runtime-group-${variable.id}`;
+        input.checked = raw.includes(group.id);
+        input.addEventListener("change", () => {
+            if (single) {
+                if (input.checked) setRawValue(variable, [group.id]);
                 return;
             }
             const enabled = new Set(getRawValue(variable));
-            checkbox.checked ? enabled.add(group.id) : enabled.delete(group.id);
+            input.checked ? enabled.add(group.id) : enabled.delete(group.id);
             const next = variable.promptGroups.filter((item) => enabled.has(item.id)).map((item) => item.id);
-            if (setRawValue(variable, next)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
-            else checkbox.checked = !checkbox.checked;
+            if (!setRawValue(variable, next)) input.checked = !input.checked;
         });
-        switchLabel.append(checkbox, track);
-        row.append(copy, stateText, switchLabel);
-        list.append(row);
+        const copy = document.createElement("span");
+        copy.className = "sb-choice-copy";
+        const groupLabel = document.createElement("span");
+        groupLabel.className = "sb-choice-label";
+        groupLabel.textContent = group.label;
+        groupLabel.title = group.label;
+        copy.append(groupLabel);
+        choice.append(input, copy);
+        list.append(choice);
     }
     field.append(list);
 }
