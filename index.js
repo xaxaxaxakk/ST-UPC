@@ -1,20 +1,35 @@
 const MODULE_NAME = "userPresetCustom";
 const CHAT_STATE_KEY = "userPresetCustom";
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const BUTTON_ID = "prompt_controls_button";
 const PANEL_ID = "prompt_controls_runtime_panel";
 const SETTINGS_ID = "prompt_controls_settings";
 const SETTINGS_ANCHOR_ID = "completion_prompt_manager";
-const VARIABLE_TYPES = new Set(["dropdown", "single", "multi", "toggle", "input"]);
+const VARIABLE_TYPE_ORDER = ["dropdown", "single", "multi", "toggle", "input"];
+const PROMPT_TYPE_ORDER = ["dropdown", "single", "multi", "group"];
+const VARIABLE_TYPES = new Set(VARIABLE_TYPE_ORDER);
+const PROMPT_TYPES = new Set(PROMPT_TYPE_ORDER);
 const THEME_STORAGE_KEY = "promptControlsCustomTheme";
 const THEME_BODY_CLASS = "sb-theme-dark";
 const MACRO_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const FORCE_TOGGLE_MARKERS = new Set([
+    "charDescription",
+    "charPersonality",
+    "scenario",
+    "personaDescription",
+    "worldInfoBefore",
+    "worldInfoAfter",
+    "main",
+    "chatHistory",
+    "dialogueExamples",
+]);
 const TYPE_LABELS = {
     dropdown: "드롭다운",
     single: "단일선택",
     multi: "다중선택",
     toggle: "ON/OFF",
     input: "텍스트",
+    group: "그룹 토글",
 };
 const TYPE_ICONS = {
     dropdown: "fa-chevron-down",
@@ -22,6 +37,7 @@ const TYPE_ICONS = {
     multi: "fa-list-check",
     toggle: "fa-toggle-on",
     input: "fa-keyboard",
+    group: "fa-layer-group",
 };
 
 let initialized = false;
@@ -64,6 +80,7 @@ let importWarnings = [];
 let inspectedPromptIdentifier = "";
 let protectedLocalVariableState = null;
 const expandedVariableIds = new Set();
+const activeEditorTabs = new Map();
 const stEventBindings = [];
 
 let activeFavoriteId = '';
@@ -158,6 +175,26 @@ function normalizePromptOption(raw, index) {
     };
 }
 
+function normalizePromptGroup(raw, index, promptOptions) {
+    const group = raw && typeof raw === "object" ? raw : {};
+    const requested = new Set((Array.isArray(group.optionIds) ? group.optionIds : []).map((value) => asString(value, 160)));
+    return {
+        id: asString(group.id, 160) || makeId("prompt-group"),
+        label: asString(group.label, 200) || `그룹 ${index + 1}`,
+        optionIds: promptOptions.filter((option) => requested.has(option.id)).map((option) => option.id),
+    };
+}
+
+function normalizeGroupSelection(rawSelection, groups, single = false) {
+    const requested = new Set((Array.isArray(rawSelection) ? rawSelection : []).map((value) => asString(value, 160)));
+    const selected = groups.filter((group) => requested.has(group.id)).map((group) => group.id);
+    return single ? selected.slice(0, 1) : selected;
+}
+
+function isSingleGroupMode(variable) {
+    return variable.groupMode === "single";
+}
+
 function normalizeSelectionDefault(type, rawDefault, options, isPromptToggle = false) {
     if (type === "multi") {
         const values = Array.isArray(rawDefault) ? rawDefault : [];
@@ -184,8 +221,9 @@ function normalizeVariable(raw, index) {
         : promptToggleMode ? "dropdown"
         : legacyType;
     const promptType =
-        ["dropdown", "single", "multi"].includes(variable.promptType) ? variable.promptType
-        : promptToggleMode && ["dropdown", "single", "multi"].includes(legacyType) ? legacyType
+        PROMPT_TYPES.has(variable.promptType) ? variable.promptType
+        : promptToggleMode && variable.type === "group" ? "group"
+        : promptToggleMode && PROMPT_TYPES.has(legacyType) ? legacyType
         : "dropdown";
     const type = promptToggleMode ? promptType : variableType;
     const options = Array.isArray(variable.options) ? variable.options.slice(0, 100).map(normalizeOption) : [];
@@ -197,6 +235,11 @@ function normalizeVariable(raw, index) {
                 .filter((option) => option.promptIdentifier)
         :   [];
     const promptOptions = [...new Map(normalizedPromptOptions.map((option) => [option.promptIdentifier, option])).values()];
+    const groupMode = variable.groupMode === "single" ? "single" : "multi";
+    const promptGroups =
+        Array.isArray(variable.promptGroups) ?
+            variable.promptGroups.slice(0, 50).map((rawGroup, groupIndex) => normalizePromptGroup(rawGroup, groupIndex, promptOptions))
+        :   [];
     const fallbackKey = `variable${index + 1}`;
     const key = MACRO_NAME_PATTERN.test(variable.key) ? variable.key : fallbackKey;
     const defaultValue = normalizeVariableDefault(variableType, variable.defaultValue, options);
@@ -213,13 +256,18 @@ function normalizeVariable(raw, index) {
         pinned: variable.pinned === true,
         runtimeHidden: variable.runtimeHidden === true,
         defaultValue,
-        promptDefaultValue: normalizeSelectionDefault(promptType, variable.promptDefaultValue, promptOptions, true),
+        groupMode,
+        promptDefaultValue:
+            promptType === "group" ?
+                normalizeGroupSelection(variable.promptDefaultValue, promptGroups, groupMode === "single")
+            :   normalizeSelectionDefault(promptType, variable.promptDefaultValue, promptOptions, true),
         separator: asString(variable.separator, 40) || "\n",
         placeholder: asString(variable.placeholder, 300),
         onValue: asString(variable.onValue, 20000),
         offValue: asString(variable.offValue, 20000),
         options,
         promptOptions,
+        promptGroups,
     };
 }
 
@@ -345,6 +393,7 @@ function setVariableDefaultValue(variable, value) {
 }
 
 function sanitizeRuntimeValue(variable, value) {
+    if (variable.type === "group") return normalizeGroupSelection(value, variable.promptGroups ?? [], isSingleGroupMode(variable));
     const options = getVariableOptions(variable);
     if (variable.type === "multi") {
         const list = Array.isArray(value) ? value : [];
@@ -575,15 +624,20 @@ function computeNativePromptCatalog() {
 }
 
 function computeToggleableNativePromptCatalog() {
-    const catalog = getNativePromptCatalog().filter((prompt) => prompt.attached && !prompt.marker);
-    const list = getPromptManagerList();
-    if (!list) return catalog;
-    const renderedToggleIds = new Set([...list.querySelectorAll("[data-pm-identifier] .prompt-manager-toggle-action")].map((toggle) => toggle.closest("[data-pm-identifier]")?.dataset.pmIdentifier).filter(Boolean));
-    return renderedToggleIds.size > 0 ? catalog.filter((prompt) => renderedToggleIds.has(prompt.identifier)) : catalog;
+    return getNativePromptCatalog().filter((prompt) => prompt.attached && (!prompt.marker || FORCE_TOGGLE_MARKERS.has(prompt.identifier)));
 }
 
 function getDesiredPromptStates(variable) {
-    if (!variable.promptToggleMode || !["dropdown", "single", "multi"].includes(variable.type)) return [];
+    if (!variable.promptToggleMode || !PROMPT_TYPES.has(variable.type)) return [];
+
+    if (variable.type === "group") {
+        const activeGroups = new Set(getRawValue(variable));
+        const activeOptionIds = new Set(variable.promptGroups.filter((group) => activeGroups.has(group.id)).flatMap((group) => group.optionIds));
+        return variable.promptOptions.map((option) => ({
+            identifier: option.promptIdentifier,
+            enabled: activeOptionIds.has(option.id),
+        }));
+    }
     const raw = getRawValue(variable);
     const selectedIds = variable.type === "multi" ? raw : [raw];
     return variable.promptOptions.map((option) => ({
@@ -655,15 +709,6 @@ function reflectSettingsPromptState(identifier, enabled) {
 
 const SETTLE_RENDER_DELAY = 1200;
 
-/**
- * /pm-render has two very different costs. `refresh=false` just repaints the prompt manager
- * list. `refresh=true` additionally runs promptManager.tryGenerate(), which is a full dry-run
- * Generate: world info, macro substitution and tokenisation of every enabled prompt. That
- * second one is what makes presets with many active toggles feel sluggish.
- *
- * So the interactive path takes the cheap render immediately, and the expensive one runs once
- * after the user stops changing things, purely to settle the token counters.
- */
 function scheduleNativePromptRender() {
     nativePromptRenderPending = true;
     if (!isPromptManagerVisible()) {
@@ -951,13 +996,16 @@ function validateImportedDefinition(raw) {
         if (!MACRO_NAME_PATTERN.test(key)) errors.push(`${path}: 올바르지 않은 변수 이름입니다.`);
         if (usedKeys.has(key.toLowerCase())) errors.push(`${path}: 중복 변수 이름 “${key}”입니다.`);
         usedKeys.add(key.toLowerCase());
-        if (!VARIABLE_TYPES.has(rawVariable.type)) errors.push(`${path}: 지원하지 않는 종류입니다.`);
-        if (rawVariable.promptToggleMode === true) {
-            if (!["dropdown", "single", "multi"].includes(rawVariable.type)) {
-                errors.push(`${path}: 토글 제어는 드롭다운·단일선택·다중선택만 지원합니다.`);
-            }
+        const promptMode = rawVariable.promptToggleMode === true;
+        if (!(promptMode ? PROMPT_TYPES : VARIABLE_TYPES).has(rawVariable.type)) {
+            errors.push(`${path}: 지원하지 않는 종류입니다.`);
+        }
+        if (promptMode) {
             if (!Array.isArray(rawVariable.promptOptions)) {
                 errors.push(`${path}: promptOptions 배열이 필요합니다.`);
+            }
+            if (rawVariable.type === "group" && !Array.isArray(rawVariable.promptGroups)) {
+                errors.push(`${path}: 그룹 토글 방식에는 promptGroups 배열이 필요합니다.`);
             }
             rawVariable.promptOptions?.forEach?.((rawOption, optionIndex) => {
                 const identifier = asString(rawOption?.promptIdentifier ?? rawOption?.identifier, 240).trim();
@@ -1240,6 +1288,47 @@ function createEditorSection(iconClass, titleText, description = "") {
     return section;
 }
 
+function createEditorTabs(ownerId, tabs) {
+    const wrap = document.createElement("div");
+    wrap.className = "sb-editor-tabs";
+    const tablist = document.createElement("div");
+    tablist.className = "sb-editor-tablist";
+    tablist.setAttribute("role", "tablist");
+    const panels = document.createElement("div");
+    panels.className = "sb-editor-tabpanels";
+    const remembered = activeEditorTabs.get(ownerId);
+    const buttons = [];
+
+    const select = (key) => {
+        activeEditorTabs.set(ownerId, key);
+        tabs.forEach((tab, index) => {
+            const selected = tab.key === key;
+            buttons[index].classList.toggle("sb-editor-tab-active", selected);
+            buttons[index].setAttribute("aria-selected", selected ? "true" : "false");
+            tab.panel.hidden = !selected;
+        });
+    };
+
+    for (const tab of tabs) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "sb-editor-tab";
+        button.setAttribute("role", "tab");
+        button.append(createIcon(tab.icon));
+        const label = document.createElement("span");
+        label.textContent = tab.label;
+        button.append(label);
+        button.addEventListener("click", () => select(tab.key));
+        buttons.push(button);
+        tablist.append(button);
+        panels.append(tab.panel);
+    }
+
+    select(tabs.some((tab) => tab.key === remembered) ? remembered : tabs[0].key);
+    wrap.append(tablist, panels);
+    return wrap;
+}
+
 function createTextInput(value, {placeholder = "", className = "sb-editor-input"} = {}) {
     const input = document.createElement("input");
     input.type = "text";
@@ -1328,7 +1417,7 @@ function attachDragReorder(listEl, itemsOrGetter, rowSelector, onReorder) {
             try {
                 handleEl.releasePointerCapture(pointerId);
             } catch {
-                /* already released */
+
             }
         }
         dragRow.classList.remove("sb-drag-active");
@@ -1403,7 +1492,7 @@ function attachDragReorder(listEl, itemsOrGetter, rowSelector, onReorder) {
             try {
                 handle.setPointerCapture(pointerId);
             } catch {
-                /* not capturable, fine */
+
             }
         }
 
@@ -1529,22 +1618,29 @@ function renderSelectionEditor(variable, body) {
     body.append(section);
 }
 
-const PROMPT_PICKER_VISIBLE_LIMIT = 80;
 const PROMPT_PICKER_SEARCH_DEBOUNCE = 110;
 
-/**
- * Adding or removing a toggle used to call renderSettingsEditor(), which rebuilds every variable
- * card from scratch and therefore destroys the picker the user is standing in. Everything here
- * updates in place instead: the option list and the picker rows each re-render on their own, so
- * the picker survives an add and the user can keep registering toggles without reopening it.
- */
 function renderPromptToggleEditor(variable, body) {
-    const describe = () => `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 선택한 항목만 ON으로 유지됩니다.`;
+    const describe = () =>
+        variable.type === "group" ?
+            `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 그룹 스위치 탭에서 각 그룹에 담으세요.`
+        :   `${variable.promptOptions.length}개 토글을 이 변수에서 관리합니다. 선택한 항목만 ON으로 유지됩니다.`;
     const section = createEditorSection("fa-toggle-on", "토글 제어", describe());
     section.classList.add("sb-prompt-toggle-section");
     const sectionDescription = section.querySelector(".sb-card-section-description");
     const list = document.createElement("div");
     list.className = "sb-prompt-option-list";
+
+    function syncPromptDefault() {
+        if (variable.type === "group") {
+            for (const group of variable.promptGroups) {
+                group.optionIds = variable.promptOptions.filter((option) => group.optionIds.includes(option.id)).map((option) => option.id);
+            }
+            variable.promptDefaultValue = normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, isSingleGroupMode(variable));
+            return;
+        }
+        variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
+    }
 
     function renderOptionRows() {
         if (sectionDescription) sectionDescription.textContent = describe();
@@ -1608,6 +1704,32 @@ function renderPromptToggleEditor(variable, body) {
                 :   "현재 프롬프트에서 찾을 수 없음";
             copy.append(name, displayLabelInput, meta);
 
+            if (variable.type === "group") {
+                const memberCount = variable.promptGroups.filter((group) => group.optionIds.includes(option.id)).length;
+                const badge = document.createElement("span");
+                badge.className = `sb-prompt-group-badge${memberCount === 0 ? " sb-prompt-group-badge-empty" : ""}`;
+                badge.textContent = memberCount === 0 ? "미배정" : `그룹 ${memberCount}개`;
+                badge.title = memberCount === 0 ? "어느 그룹에도 속하지 않아 항상 OFF로 유지됩니다." : "이 토글이 속한 그룹 수입니다.";
+                const removeFromGroups = createActionButton(
+                    "등록 제거",
+                    () => {
+                        variable.promptOptions = variable.promptOptions.filter((item) => item.id !== option.id);
+                        syncPromptDefault();
+                        renderOptionRows();
+                        renderGroupRows();
+                        refreshPickerAvailability();
+                        renderRuntimePanel();
+                        queueNativePromptSync([variable]);
+                        persistDefinition();
+                    },
+                    "sb-action-danger sb-prompt-option-remove",
+                    "fa-xmark",
+                );
+                row.append(handle, icon, copy, badge, removeFromGroups);
+                fragment.append(row);
+                continue;
+            }
+
             const defaultLabel = document.createElement("label");
             defaultLabel.className = "sb-default-picker";
             const defaultInput = document.createElement("input");
@@ -1634,8 +1756,9 @@ function renderPromptToggleEditor(variable, body) {
                 "등록 제거",
                 () => {
                     variable.promptOptions = variable.promptOptions.filter((item) => item.id !== option.id);
-                    variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
+                    syncPromptDefault();
                     renderOptionRows();
+                    renderGroupRows();
                     refreshPickerAvailability();
                     renderRuntimePanel();
                     queueNativePromptSync([variable]);
@@ -1651,7 +1774,9 @@ function renderPromptToggleEditor(variable, body) {
     }
 
     attachDragReorder(list, () => variable.promptOptions, ".sb-prompt-option-row", () => {
+        syncPromptDefault();
         renderOptionRows();
+        renderGroupRows();
         renderRuntimePanel();
         queueNativePromptSync([variable]);
         persistDefinition();
@@ -1691,6 +1816,8 @@ function renderPromptToggleEditor(variable, body) {
     footer.className = "sb-prompt-picker-footer";
     const selectionCount = document.createElement("span");
     selectionCount.textContent = "0개 선택";
+    const availableCount = document.createElement("span");
+    availableCount.className = "sb-prompt-picker-count";
 
     let available = [];
     let pickerStale = true;
@@ -1699,13 +1826,10 @@ function renderPromptToggleEditor(variable, body) {
 
     const updateSelection = () => {
         selectionCount.textContent = `${selected.size}개 선택`;
+        availableCount.textContent = `추가 가능 ${available.length}개`;
         addSelected.disabled = selected.size === 0;
     };
 
-    /**
-     * The candidate list depends on what every other toggle variable has already claimed, so it
-     * is recomputed whenever the picker opens or this variable's registrations change.
-     */
     function computeAvailable() {
         const used = new Set(variable.promptOptions.map((option) => option.promptIdentifier));
         const usedByOtherVariables = new Set(currentDefinition.variables.filter((item) => item.id !== variable.id && item.promptToggleMode).flatMap((item) => item.promptOptions.map((option) => option.promptIdentifier)));
@@ -1719,19 +1843,12 @@ function renderPromptToggleEditor(variable, body) {
         updateSelection();
     }
 
-    /**
-     * Presets routinely carry several hundred prompts. Rendering every candidate and then
-     * flipping `hidden` on all of them per keystroke thrashed layout inside the scroll container,
-     * so only the first PROMPT_PICKER_VISIBLE_LIMIT matches are ever in the DOM. Selection state
-     * lives in `selected` rather than in the rows, so it survives a re-render.
-     */
     function renderPickerRows() {
         const query = search.value.trim().toLocaleLowerCase();
         const matches = query ? available.filter((prompt) => prompt.search.includes(query)) : available;
-        const shown = matches.slice(0, PROMPT_PICKER_VISIBLE_LIMIT);
         const fragment = document.createDocumentFragment();
 
-        for (const prompt of shown) {
+        for (const prompt of matches) {
             const isSelected = selected.has(prompt.identifier);
             const row = document.createElement("label");
             row.className = `sb-prompt-picker-row${isSelected ? " sb-prompt-picker-row-selected" : ""}`;
@@ -1753,13 +1870,11 @@ function renderPromptToggleEditor(variable, body) {
         if (matches.length === 0) {
             const empty = document.createElement("div");
             empty.className = "sb-prompt-picker-empty";
-            empty.textContent = available.length === 0 ? "추가할 수 있는 토글이 없습니다." : "검색 결과가 없습니다.";
+            empty.textContent =
+                available.length === 0 ?
+                    "추가할 수 있는 토글이 없습니다. 다른 토글 변수에 이미 등록된 항목은 여기에 나오지 않습니다."
+                :   "검색 결과가 없습니다.";
             fragment.append(empty);
-        } else if (matches.length > shown.length) {
-            const note = document.createElement("div");
-            note.className = "sb-prompt-picker-empty";
-            note.textContent = `${matches.length}개 중 ${shown.length}개 표시 · 검색어로 좁혀보세요.`;
-            fragment.append(note);
         }
 
         pickerList.replaceChildren(fragment);
@@ -1799,9 +1914,10 @@ function renderPromptToggleEditor(variable, body) {
                 .map((prompt) => ({id: makeId("prompt-option"), promptIdentifier: prompt.identifier, label: prompt.name, displayLabel: ""}));
             if (additions.length === 0) return;
             variable.promptOptions.push(...additions);
-            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
+            syncPromptDefault();
             selected.clear();
             renderOptionRows();
+            renderGroupRows();
             computeAvailable();
             renderPickerRows();
             renderRuntimePanel();
@@ -1812,7 +1928,7 @@ function renderPromptToggleEditor(variable, body) {
         "fa-plus",
     );
     addSelected.disabled = true;
-    footer.append(selectionCount, addSelected);
+    footer.append(selectionCount, availableCount, addSelected);
     picker.append(pickerHeader, searchWrap, pickerList, footer);
 
     const addToggle = createActionButton(
@@ -1832,9 +1948,206 @@ function renderPromptToggleEditor(variable, body) {
         "fa-plus",
     );
 
+    const groupSection = createEditorSection("fa-layer-group", "그룹 스위치", "");
+    const modeButtons = new Map();
+    const groupModeControl = document.createElement("div");
+    groupModeControl.className = "sb-group-mode-control";
+    groupModeControl.setAttribute("role", "group");
+    groupModeControl.setAttribute("aria-label", "그룹 선택 방식");
+
+    const setGroupMode = (mode) => {
+        if (variable.groupMode === mode) return;
+        variable.groupMode = mode;
+        variable.promptDefaultValue = normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, mode === "single");
+        for (const [key, button] of modeButtons) {
+            button.classList.toggle("sb-group-mode-option-active", key === mode);
+            button.setAttribute("aria-pressed", key === mode ? "true" : "false");
+        }
+        renderGroupRows();
+        renderRuntimePanel();
+        queueNativePromptSync([variable]);
+        persistDefinition();
+    };
+
+    for (const [mode, text, hint] of [
+        ["single", "단일", "그룹 하나만 켜집니다. 다른 그룹을 켜면 이전 그룹이 꺼집니다."],
+        ["multi", "다중", "여러 그룹을 동시에 켤 수 있습니다."],
+    ]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `sb-group-mode-option${variable.groupMode === mode ? " sb-group-mode-option-active" : ""}`;
+        button.textContent = text;
+        button.title = hint;
+        button.setAttribute("aria-pressed", variable.groupMode === mode ? "true" : "false");
+        button.addEventListener("click", () => setGroupMode(mode));
+        modeButtons.set(mode, button);
+        groupModeControl.append(button);
+    }
+    groupSection.querySelector(".sb-card-section-header")?.append(groupModeControl);
+    groupSection.classList.add("sb-prompt-group-section");
+    const groupList = document.createElement("div");
+    groupList.className = "sb-prompt-group-list";
+
+    function renderGroupRows() {
+        groupList.replaceChildren();
+
+        if (variable.promptGroups.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "sb-prompt-option-empty";
+            empty.append(createIcon("fa-layer-group"));
+            const copy = document.createElement("div");
+            const title = document.createElement("strong");
+            title.textContent = "그룹이 없습니다";
+            const description = document.createElement("span");
+            description.textContent = "아래 그룹 추가 버튼으로 스위치를 만들고, 등록한 토글을 담으세요.";
+            copy.append(title, description);
+            empty.append(copy);
+            groupList.append(empty);
+            return;
+        }
+
+        const catalogById = new Map(getNativePromptCatalog().map((prompt) => [prompt.identifier, prompt]));
+        const fragment = document.createDocumentFragment();
+
+        variable.promptGroups.forEach((group, groupIndex) => {
+            const row = document.createElement("div");
+            row.className = "sb-prompt-group-row";
+            const header = document.createElement("div");
+            header.className = "sb-prompt-group-header";
+            const handle = document.createElement("span");
+            handle.className = "sb-option-index sb-drag-handle";
+            handle.style.touchAction = "none";
+            handle.append(createIcon("fa-grip-vertical"));
+            const handleText = document.createElement("span");
+            handleText.textContent = String(groupIndex + 1).padStart(2, "0");
+            handle.append(handleText);
+
+            const labelInput = createTextInput(group.label, {placeholder: `그룹 ${groupIndex + 1}`});
+            labelInput.classList.add("sb-option-label-input");
+            labelInput.title = "런타임 패널의 스위치에 표시할 이름입니다.";
+            labelInput.addEventListener("change", () => {
+                group.label = labelInput.value.slice(0, 200) || `그룹 ${groupIndex + 1}`;
+                labelInput.value = group.label;
+                renderRuntimePanel();
+                persistDefinition();
+            });
+
+            const defaultLabel = document.createElement("label");
+            defaultLabel.className = "sb-default-picker";
+            const defaultInput = document.createElement("input");
+            defaultInput.type = "checkbox";
+            defaultInput.checked = variable.promptDefaultValue.includes(group.id);
+            defaultInput.addEventListener("change", () => {
+                if (isSingleGroupMode(variable)) {
+                    variable.promptDefaultValue = defaultInput.checked ? [group.id] : [];
+                    renderGroupRows();
+                } else {
+                    const defaults = new Set(variable.promptDefaultValue);
+                    defaultInput.checked ? defaults.add(group.id) : defaults.delete(group.id);
+                    variable.promptDefaultValue = normalizeGroupSelection([...defaults], variable.promptGroups);
+                }
+                renderRuntimePanel();
+                queueNativePromptSync([variable]);
+                persistDefinition();
+            });
+            defaultLabel.append(defaultInput, createIcon("fa-star"));
+            const defaultText = document.createElement("span");
+            defaultText.textContent = "기본 ON";
+            defaultLabel.append(defaultText);
+
+            const remove = createActionButton(
+                "그룹 삭제",
+                () => {
+                    if (!globalThis.confirm(`“${group.label}” 그룹을 삭제할까요? 등록된 토글은 그대로 남습니다.`)) return;
+                    variable.promptGroups = variable.promptGroups.filter((item) => item.id !== group.id);
+                    variable.promptDefaultValue = normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, isSingleGroupMode(variable));
+                    renderOptionRows();
+                    renderGroupRows();
+                    renderRuntimePanel();
+                    queueNativePromptSync([variable]);
+                    persistDefinition();
+                },
+                "sb-action-danger sb-prompt-option-remove",
+                "fa-trash-can",
+            );
+            header.append(handle, labelInput, defaultLabel, remove);
+
+            const members = document.createElement("div");
+            members.className = "sb-prompt-group-members";
+            if (variable.promptOptions.length === 0) {
+                const hint = document.createElement("div");
+                hint.className = "sb-prompt-group-hint";
+                hint.textContent = "먼저 위에서 토글을 등록하면 여기에 담을 수 있습니다.";
+                members.append(hint);
+            }
+            for (const option of variable.promptOptions) {
+                const member = document.createElement("label");
+                member.className = "sb-prompt-group-member";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.checked = group.optionIds.includes(option.id);
+                checkbox.addEventListener("change", () => {
+                    const membership = new Set(group.optionIds);
+                    checkbox.checked ? membership.add(option.id) : membership.delete(option.id);
+                    group.optionIds = variable.promptOptions.filter((item) => membership.has(item.id)).map((item) => item.id);
+                    member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
+                    renderOptionRows();
+                    renderRuntimePanel();
+                    queueNativePromptSync([variable]);
+                    persistDefinition();
+                });
+                const name = document.createElement("span");
+                name.textContent = getPromptOptionDisplayLabel(option, catalogById);
+                member.append(checkbox, name);
+                member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
+                members.append(member);
+            }
+
+            row.append(header, members);
+            fragment.append(row);
+        });
+
+        groupList.append(fragment);
+    }
+
+    attachDragReorder(groupList, () => variable.promptGroups, ".sb-prompt-group-row", () => {
+        variable.promptDefaultValue = normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, isSingleGroupMode(variable));
+        renderGroupRows();
+        renderRuntimePanel();
+        persistDefinition();
+    });
+
+    const addGroup = createActionButton(
+        "그룹 추가",
+        () => {
+            variable.promptGroups.push({
+                id: makeId("prompt-group"),
+                label: `그룹 ${String.fromCharCode(65 + Math.min(variable.promptGroups.length, 25))}`,
+                optionIds: [],
+            });
+            renderOptionRows();
+            renderGroupRows();
+            renderRuntimePanel();
+            persistDefinition();
+        },
+        "sb-action-primary sb-add-option",
+        "fa-plus",
+    );
+    groupSection.append(groupList, addGroup);
+
     renderOptionRows();
     section.append(list, addToggle, picker);
-    body.append(section);
+    if (variable.type !== "group") {
+        body.append(section);
+        return;
+    }
+    renderGroupRows();
+    body.append(
+        createEditorTabs(variable.id, [
+            {key: "toggles", label: "토글 제어", icon: "fa-toggle-on", panel: section},
+            {key: "groups", label: "그룹 스위치", icon: "fa-layer-group", panel: groupSection},
+        ]),
+    );
 }
 
 function renderToggleEditor(variable, body) {
@@ -2010,7 +2323,7 @@ function renderVariableCard(variable) {
     keyControl.append(keyInput, setvarControl);
     const typeSelect = document.createElement("select");
     typeSelect.className = "sb-editor-select";
-    const availableTypes = variable.promptToggleMode ? ["dropdown", "single", "multi"] : Object.keys(TYPE_LABELS);
+    const availableTypes = variable.promptToggleMode ? PROMPT_TYPE_ORDER : VARIABLE_TYPE_ORDER;
     for (const value of availableTypes) {
         const option = document.createElement("option");
         option.value = value;
@@ -2062,7 +2375,10 @@ function renderVariableCard(variable) {
         else variable.variableType = variable.type;
         variable.promptToggleMode = modeInput.checked;
         variable.type = variable.promptToggleMode ? variable.promptType : variable.variableType;
-        variable.promptDefaultValue = normalizeSelectionDefault(variable.promptType, variable.promptDefaultValue, variable.promptOptions, true);
+        variable.promptDefaultValue =
+            variable.promptType === "group" ?
+                normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, isSingleGroupMode(variable))
+            :   normalizeSelectionDefault(variable.promptType, variable.promptDefaultValue, variable.promptOptions, true);
         refreshMacros();
         renderSettingsEditor();
         renderRuntimePanel();
@@ -2073,13 +2389,17 @@ function renderVariableCard(variable) {
         variable.type = typeSelect.value;
         if (variable.promptToggleMode) {
             variable.promptType = variable.type;
-            variable.promptDefaultValue = normalizeSelectionDefault(variable.type, null, variable.promptOptions, true);
+            variable.promptDefaultValue =
+                variable.type === "group" ?
+                    normalizeGroupSelection(variable.promptDefaultValue, variable.promptGroups, isSingleGroupMode(variable))
+                :   normalizeSelectionDefault(variable.type, null, variable.promptOptions, true);
         } else {
             variable.variableType = variable.type;
             variable.defaultValue = normalizeVariableDefault(variable.type, null, variable.options);
         }
         renderSettingsEditor();
         renderRuntimePanel();
+        if (variable.promptToggleMode) queueNativePromptSync([variable]);
         persistDefinition();
     });
     grid.append(createLabeledField("표시 이름", labelInput, "fa-tag"));
@@ -2237,11 +2557,6 @@ function ensureSettingsUI() {
     return settingsContainer;
 }
 
-/**
- * Watching document.body with subtree:true means every streamed message token produces
- * mutation records for this observer. Once the anchor exists we only need to watch its
- * direct parent, which is quiet.
- */
 function ensureSettingsPlacementObserver() {
     if (!document.body) return;
     const anchor = document.getElementById(SETTINGS_ANCHOR_ID);
@@ -2312,10 +2627,6 @@ function renderSettingsWarnings() {
     }
 }
 
-/**
- * Rebuilding every variable card costs O(variables x options) and the editor lives inside a
- * collapsible drawer that is closed most of the time. Defer the work until it is on screen.
- */
 function ensureSettingsVisibilityObserver(container) {
     if (typeof IntersectionObserver !== "function") return false;
     if (settingsVisibilityObserver && observedSettingsContainer === container && container.isConnected) return true;
@@ -2631,6 +2942,57 @@ function renderSinglePromptToggle(variable, option, field, promptCatalog) {
     field.append(row);
 }
 
+function renderRuntimePromptGroups(variable, field) {
+    if (variable.promptGroups.length === 0) {
+        const message = document.createElement("div");
+        message.className = "sb-message";
+        message.textContent = "이 변수에 만들어 둔 그룹이 없습니다.";
+        field.append(message);
+        return;
+    }
+
+    const list = document.createElement("div");
+    list.className = "sb-group-switch-list";
+    for (const group of variable.promptGroups) {
+        const active = getRawValue(variable).includes(group.id);
+        const row = document.createElement("div");
+        row.className = "sb-switch-row";
+        const copy = document.createElement("span");
+        copy.className = "sb-switch-state-copy";
+        const groupLabel = document.createElement("span");
+        groupLabel.className = "sb-switch-option-label";
+        groupLabel.textContent = group.label;
+        groupLabel.title = group.label;
+        copy.append(groupLabel);
+        const stateText = document.createElement("span");
+        stateText.className = "sb-switch-state-text";
+        stateText.textContent = active ? "ON" : "OFF";
+        const switchLabel = document.createElement("label");
+        switchLabel.className = "sb-switch";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = active;
+        const track = document.createElement("span");
+        track.className = "sb-switch-track";
+        checkbox.addEventListener("change", () => {
+            if (isSingleGroupMode(variable)) {
+                if (setRawValue(variable, checkbox.checked ? [group.id] : [])) renderRuntimePanel();
+                else checkbox.checked = !checkbox.checked;
+                return;
+            }
+            const enabled = new Set(getRawValue(variable));
+            checkbox.checked ? enabled.add(group.id) : enabled.delete(group.id);
+            const next = variable.promptGroups.filter((item) => enabled.has(item.id)).map((item) => item.id);
+            if (setRawValue(variable, next)) stateText.textContent = checkbox.checked ? "ON" : "OFF";
+            else checkbox.checked = !checkbox.checked;
+        });
+        switchLabel.append(checkbox, track);
+        row.append(copy, stateText, switchLabel);
+        list.append(row);
+    }
+    field.append(list);
+}
+
 function renderRuntimeInput(variable, field) {
     const input = document.createElement("input");
     input.type = "text";
@@ -2751,6 +3113,7 @@ function renderRuntimePanel() {
             field.className = `sb-runtime-field${variable.pinned ? " sb-runtime-field-pinned" : ""}`;
             field.append(createRuntimeLabel(variable));
             if (["dropdown", "single", "multi"].includes(variable.type)) renderRuntimeSelection(variable, field);
+            if (variable.type === "group") renderRuntimePromptGroups(variable, field);
             if (variable.type === "toggle") renderRuntimeToggle(variable, field);
             if (variable.type === "input") renderRuntimeInput(variable, field);
             body.append(field);
