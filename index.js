@@ -29,7 +29,7 @@ const TYPE_LABELS = {
     multi: "다중선택",
     toggle: "ON/OFF",
     input: "텍스트",
-    group: "그룹 토글",
+    group: "그룹토글",
 };
 const TYPE_ICONS = {
     dropdown: "fa-chevron-down",
