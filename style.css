@@ -1584,6 +1584,10 @@ body.sb-theme-dark #prompt_controls_settings {
         padding: 6px;
     }
 
+    .sb-editor-tabpanels .sb-prompt-option-row {
+        grid-template-columns: 10px minmax(0, 1fr) 32px !important;
+    }
+
     .sb-prompt-picker-footer {
         align-items: stretch;
         flex-direction: column;
@@ -1661,8 +1665,14 @@ body.sb-theme-dark #prompt_controls_settings {
 }
 
 .sb-editor-tabpanels .sb-card-section-icon,
-.sb-editor-tabpanels .sb-card-section-title {
+.sb-editor-tabpanels .sb-prompt-state-icon,
+.sb-editor-tabpanels .sb-card-section-title,
+.sb-editor-tabpanels .sb-prompt-state-text {
     display: none;
+}
+
+.sb-editor-tabpanels .sb-prompt-option-row {
+    grid-template-columns: 10px minmax(0, 1fr) 32px !important;
 }
 
 .sb-group-mode-control {
@@ -1732,6 +1742,8 @@ body.sb-theme-dark #prompt_controls_settings {
     flex-wrap: wrap;
     gap: 6px;
     padding: 0 8px 8px;
+    max-height: 120px;
+    overflow-y: auto;
 }
 
 .sb-prompt-group-member {
@@ -1746,6 +1758,10 @@ body.sb-theme-dark #prompt_controls_settings {
     color: var(--sb-muted);
     font-size: 0.7rem;
     cursor: pointer;
+}
+
+.sb-prompt-group-member input {
+    display: none;
 }
 
 .sb-prompt-group-member span {
@@ -1766,6 +1782,7 @@ body.sb-theme-dark #prompt_controls_settings {
 }
 
 .sb-prompt-group-badge {
+    display: none;
     justify-self: end;
     padding: 3px 8px;
     border-radius: 999px;
