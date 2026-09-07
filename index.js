@@ -77,6 +77,7 @@ let nativePromptRenderInFlight = false;
 let nativePromptRenderPending = false;
 let saveChain = Promise.resolve();
 let pendingSave = null;
+let openRuntimeDropdown = null;
 let nativePromptSyncChain = Promise.resolve();
 let loadRevision = 0;
 let importWarnings = [];
@@ -3022,6 +3023,153 @@ function createRuntimeLabel(variable) {
     return label;
 }
 
+function closeRuntimeDropdown() {
+    openRuntimeDropdown?.close();
+}
+
+function createRuntimeDropdown(variable, options, raw, promptCatalog) {
+    const labelOf = (option) => (variable.promptToggleMode ? getPromptOptionDisplayLabel(option, promptCatalog) : option.label);
+    let selectedId = raw;
+
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "sb-select sb-dropdown-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    const value = document.createElement("span");
+    value.className = "sb-dropdown-value";
+    trigger.append(value, createIcon("fa-chevron-down"));
+
+    const syncTrigger = () => {
+        const selected = options.find((option) => option.id === selectedId);
+        value.textContent = selected ? labelOf(selected) : "선택 안 함";
+        value.classList.toggle("sb-dropdown-value-empty", !selected);
+    };
+    syncTrigger();
+
+    const openMenu = () => {
+        closeRuntimeDropdown();
+
+        const menu = document.createElement("div");
+        menu.className = "sb-dropdown-menu";
+        menu.setAttribute("role", "listbox");
+
+        const rows = options.map((option) => {
+            const isSelected = option.id === selectedId;
+            const row = document.createElement("button");
+            row.type = "button";
+            row.className = `sb-dropdown-option${isSelected ? " sb-dropdown-option-selected" : ""}`;
+            row.setAttribute("role", "option");
+            row.setAttribute("aria-selected", isSelected ? "true" : "false");
+            row.tabIndex = -1;
+            const text = document.createElement("span");
+            text.className = "sb-dropdown-option-label";
+            text.textContent = labelOf(option);
+            row.append(text, createIcon("fa-check"));
+            row.addEventListener("click", () => {
+                selectedId = option.id;
+                setRawValue(variable, option.id);
+                syncTrigger();
+                close();
+                trigger.focus();
+            });
+            menu.append(row);
+            return row;
+        });
+
+        document.body.append(menu);
+
+        const position = () => {
+            const rect = trigger.getBoundingClientRect();
+            const margin = 8;
+            const gap = 4;
+            const limit = 260;
+            menu.style.width = `${rect.width}px`;
+            menu.style.left = `${Math.max(margin, Math.min(rect.left, window.innerWidth - rect.width - margin))}px`;
+            const below = window.innerHeight - rect.bottom - gap - margin;
+            const above = rect.top - gap - margin;
+            if (below >= above) {
+                menu.style.maxHeight = `${Math.max(96, Math.min(limit, below))}px`;
+                menu.style.top = `${rect.bottom + gap}px`;
+                menu.classList.remove("sb-dropdown-menu-above");
+            } else {
+                const height = Math.max(96, Math.min(limit, above));
+                menu.style.maxHeight = `${height}px`;
+                menu.style.top = `${Math.max(margin, rect.top - gap - height)}px`;
+                menu.classList.add("sb-dropdown-menu-above");
+            }
+        };
+
+        const reposition = () => {
+            if (!trigger.isConnected) {
+                close();
+                return;
+            }
+            position();
+        };
+
+        function close() {
+            window.removeEventListener("resize", reposition);
+            window.removeEventListener("scroll", reposition, true);
+            menu.remove();
+            trigger.setAttribute("aria-expanded", "false");
+            if (openRuntimeDropdown?.trigger === trigger) openRuntimeDropdown = null;
+        }
+
+        const focusRow = (index) => {
+            if (rows.length === 0) return;
+            rows[(index + rows.length) % rows.length].focus();
+        };
+
+        menu.addEventListener("keydown", (event) => {
+            const index = rows.indexOf(document.activeElement);
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                focusRow(index + 1);
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                focusRow(index - 1);
+            } else if (event.key === "Home") {
+                event.preventDefault();
+                focusRow(0);
+            } else if (event.key === "End") {
+                event.preventDefault();
+                focusRow(rows.length - 1);
+            } else if (event.key === "Escape") {
+                event.preventDefault();
+                close();
+                trigger.focus();
+            } else if (event.key === "Tab") {
+                close();
+            }
+        });
+
+        position();
+        window.addEventListener("resize", reposition);
+        window.addEventListener("scroll", reposition, true);
+        trigger.setAttribute("aria-expanded", "true");
+        openRuntimeDropdown = {trigger, menu, close};
+
+        const selectedIndex = options.findIndex((option) => option.id === selectedId);
+        focusRow(selectedIndex >= 0 ? selectedIndex : 0);
+    };
+
+    trigger.addEventListener("click", () => {
+        if (openRuntimeDropdown?.trigger === trigger) {
+            closeRuntimeDropdown();
+            return;
+        }
+        openMenu();
+    });
+    trigger.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        event.preventDefault();
+        if (openRuntimeDropdown?.trigger !== trigger) openMenu();
+    });
+
+    return trigger;
+}
+
 function renderRuntimeSelection(variable, field) {
     const raw = getRawValue(variable);
     const options = getVariableOptions(variable);
@@ -3033,17 +3181,7 @@ function renderRuntimeSelection(variable, field) {
     }
 
     if (variable.type === "dropdown") {
-        const select = document.createElement("select");
-        select.className = "sb-select";
-        for (const option of options) {
-            const element = document.createElement("option");
-            element.value = option.id;
-            element.textContent = variable.promptToggleMode ? getPromptOptionDisplayLabel(option, promptCatalog) : option.label;
-            element.selected = raw === option.id;
-            select.append(element);
-        }
-        select.addEventListener("change", () => setRawValue(variable, select.value));
-        field.append(select);
+        field.append(createRuntimeDropdown(variable, options, raw, promptCatalog));
         return;
     }
 
@@ -3260,6 +3398,7 @@ function renderRuntimeFavorites(body) {
 }
 
 function renderRuntimePanel() {
+    closeRuntimeDropdown();
     const panel = ensureRuntimePanel();
     if (!panel.classList.contains("sb-open")) {
         updateFavoriteButtonState();
@@ -3449,6 +3588,7 @@ function openRuntimePanel() {
 }
 
 function closeRuntimePanel() {
+    closeRuntimeDropdown();
     runtimePanel?.classList.remove("sb-open");
     runtimeButton?.setAttribute("aria-expanded", "false");
 }
@@ -3508,13 +3648,22 @@ function bindStEvent(type, handler) {
 }
 
 function handleDocumentPointerDown(event) {
+    if (openRuntimeDropdown) {
+        if (openRuntimeDropdown.menu.contains(event.target)) return;
+        if (!openRuntimeDropdown.trigger.contains(event.target)) closeRuntimeDropdown();
+    }
     if (!runtimePanel?.classList.contains("sb-open")) return;
     if (runtimePanel.contains(event.target) || runtimeButton?.contains(event.target)) return;
     closeRuntimePanel();
 }
 
 function handleDocumentKeyDown(event) {
-    if (event.key === "Escape") closeRuntimePanel();
+    if (event.key !== "Escape") return;
+    if (openRuntimeDropdown) {
+        closeRuntimeDropdown();
+        return;
+    }
+    closeRuntimePanel();
 }
 
 function initialize() {
@@ -3599,6 +3748,7 @@ function cleanup() {
     observedSettingsContainer = null;
     runtimePanelDirty = false;
     settingsEditorDirty = false;
+    closeRuntimeDropdown();
     runtimePanel?.remove();
     runtimeButton?.remove();
     settingsContainer?.remove();
