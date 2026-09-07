@@ -3086,17 +3086,23 @@ function createRuntimeDropdown(variable, options, raw, promptCatalog) {
             const limit = 260;
             menu.style.width = `${rect.width}px`;
             menu.style.left = `${Math.max(margin, Math.min(rect.left, window.innerWidth - rect.width - margin))}px`;
+
             const below = window.innerHeight - rect.bottom - gap - margin;
             const above = rect.top - gap - margin;
-            if (below >= above) {
-                menu.style.maxHeight = `${Math.max(96, Math.min(limit, below))}px`;
+
+            menu.style.maxHeight = `${limit}px`;
+            const natural = menu.offsetHeight;
+
+            const placeAbove = natural > below && above > below;
+            const room = Math.max(96, placeAbove ? above : below);
+            menu.style.maxHeight = `${Math.min(natural, room)}px`;
+
+            if (placeAbove) {
+                menu.style.top = `${Math.max(margin, rect.top - gap - menu.offsetHeight)}px`;
+                menu.classList.add("sb-dropdown-menu-above");
+            } else {
                 menu.style.top = `${rect.bottom + gap}px`;
                 menu.classList.remove("sb-dropdown-menu-above");
-            } else {
-                const height = Math.max(96, Math.min(limit, above));
-                menu.style.maxHeight = `${height}px`;
-                menu.style.top = `${Math.max(margin, rect.top - gap - height)}px`;
-                menu.classList.add("sb-dropdown-menu-above");
             }
         };
 

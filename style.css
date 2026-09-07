@@ -1983,12 +1983,24 @@ body.sb-theme-dark .sb-dropdown-menu {
 
 .sb-dropdown-menu-above {
     transform-origin: bottom center;
+    animation-name: sb-dropdown-in-above;
 }
 
 @keyframes sb-dropdown-in {
     from {
         opacity: 0;
         transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes sb-dropdown-in-above {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
     }
     to {
         opacity: 1;
