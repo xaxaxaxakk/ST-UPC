@@ -10,7 +10,9 @@ const PROMPT_TYPE_ORDER = ["dropdown", "single", "multi", "group"];
 const VARIABLE_TYPES = new Set(VARIABLE_TYPE_ORDER);
 const PROMPT_TYPES = new Set(PROMPT_TYPE_ORDER);
 const THEME_STORAGE_KEY = "promptControlsCustomTheme";
+const THEME_MAP_STORAGE_KEY = "promptControlsCustomThemeByStTheme";
 const THEME_BODY_CLASS = "sb-theme-dark";
+const DEFAULT_ST_THEME_KEY = "__default__";
 const MACRO_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const FORCE_TOGGLE_MARKERS = new Set([
     "charDescription",
@@ -74,6 +76,7 @@ let nativePromptRenderTimer = null;
 let nativePromptRenderInFlight = false;
 let nativePromptRenderPending = false;
 let saveChain = Promise.resolve();
+let pendingSave = null;
 let nativePromptSyncChain = Promise.resolve();
 let loadRevision = 0;
 let importWarnings = [];
@@ -83,6 +86,7 @@ const expandedVariableIds = new Set();
 const activeEditorTabs = new Map();
 const stEventBindings = [];
 
+let activeStThemeName = "";
 let activeFavoriteId = '';
 let favoriteDeleteMode = false;
 
@@ -103,7 +107,33 @@ function notify(kind, message) {
     }
 }
 
-function getStoredTheme() {
+function getStThemeName() {
+    const context = getContext();
+    const fromSettings = context?.powerUserSettings?.theme;
+    if (typeof fromSettings === "string" && fromSettings) return fromSettings;
+    const select = document.getElementById("themes");
+    const fromDom = select?.value;
+    if (typeof fromDom === "string" && fromDom) return fromDom;
+    return DEFAULT_ST_THEME_KEY;
+}
+
+function readThemeMap() {
+    try {
+        const raw = globalThis.localStorage?.getItem(THEME_MAP_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeThemeMap(map) {
+    try {
+        globalThis.localStorage?.setItem(THEME_MAP_STORAGE_KEY, JSON.stringify(map));
+    } catch {}
+}
+
+function getFallbackTheme() {
     try {
         const saved = globalThis.localStorage?.getItem(THEME_STORAGE_KEY);
         return saved === "dark" || saved === "light" ? saved : "light";
@@ -112,7 +142,22 @@ function getStoredTheme() {
     }
 }
 
-function applyTheme(theme) {
+function getStoredTheme(themeName = getStThemeName()) {
+    const stored = readThemeMap()[themeName];
+    if (stored === "dark" || stored === "light") return stored;
+    return getFallbackTheme();
+}
+
+function persistTheme(theme, themeName = getStThemeName()) {
+    const map = readThemeMap();
+    map[themeName] = theme;
+    writeThemeMap(map);
+    try {
+        globalThis.localStorage?.setItem(THEME_STORAGE_KEY, theme);
+    } catch {}
+}
+
+function applyTheme(theme, {persist = true} = {}) {
     document.body.classList.toggle(THEME_BODY_CLASS, theme === "dark");
     const toggleButton = document.getElementById("prompt_controls_theme_toggle");
     if (toggleButton) {
@@ -122,14 +167,24 @@ function applyTheme(theme) {
         toggleButton.setAttribute("aria-pressed", theme === "dark" ? "true" : "false");
         toggleButton.title = theme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환";
     }
-    try {
-        globalThis.localStorage?.setItem(THEME_STORAGE_KEY, theme);
-    } catch {}
+    if (persist) persistTheme(theme, activeStThemeName || getStThemeName());
 }
 
 function toggleTheme() {
     const next = document.body.classList.contains(THEME_BODY_CLASS) ? "light" : "dark";
     applyTheme(next);
+}
+
+function syncThemeWithStTheme({force = false} = {}) {
+    const themeName = getStThemeName();
+    if (!force && themeName === activeStThemeName) return;
+    activeStThemeName = themeName;
+    applyTheme(getStoredTheme(themeName), {persist: false});
+}
+
+function handleStThemeSelectChange(event) {
+    if (event.target?.id !== "themes") return;
+    setTimeout(() => syncThemeWithStTheme(), 0);
 }
 
 function createEmptyDefinition() {
@@ -687,11 +742,12 @@ function handlePromptInspectorClick(event) {
 
 function reflectNativePromptState(identifier, enabled) {
     const row = findPromptManagerRow(identifier);
-    if (!row) return;
+    if (!row) return false;
     row.classList.toggle("completion_prompt_manager_prompt_disabled", !enabled);
     const toggle = row.querySelector(".prompt-manager-toggle-action");
     toggle?.classList.toggle("fa-toggle-on", enabled);
     toggle?.classList.toggle("fa-toggle-off", !enabled);
+    return true;
 }
 
 function reflectSettingsPromptState(identifier, enabled) {
@@ -710,7 +766,7 @@ function reflectSettingsPromptState(identifier, enabled) {
 
 const SETTLE_RENDER_DELAY = 1200;
 
-function scheduleNativePromptRender() {
+function scheduleNativePromptRender({relistNeeded = false} = {}) {
     nativePromptRenderPending = true;
     if (!isPromptManagerVisible()) {
         clearTimeout(nativePromptRenderTimer);
@@ -719,7 +775,7 @@ function scheduleNativePromptRender() {
         nativePromptSettleTimer = null;
         return;
     }
-    scheduleLightPromptRender();
+    if (relistNeeded) scheduleLightPromptRender();
     scheduleSettlePromptRender();
 }
 
@@ -828,6 +884,7 @@ function queueNativePromptSync(variables = currentDefinition.variables) {
     const promptListPresent = Boolean(getPromptManagerList());
     const settingsAttached = Boolean(settingsContainer?.isConnected);
     let settingsChanged = false;
+    let relistNeeded = false;
     for (const [identifier, enabled] of desired) {
         const entry = orderEntries.get(identifier);
         if (!entry) continue;
@@ -835,12 +892,12 @@ function queueNativePromptSync(variables = currentDefinition.variables) {
             entry.enabled = enabled;
             settingsChanged = true;
         }
-        if (promptListPresent) reflectNativePromptState(identifier, enabled);
+        if (promptListPresent && !reflectNativePromptState(identifier, enabled)) relistNeeded = true;
         if (settingsAttached) reflectSettingsPromptState(identifier, enabled);
     }
     if (settingsChanged) context.saveSettingsDebounced?.();
 
-    scheduleNativePromptRender();
+    scheduleNativePromptRender({relistNeeded});
     return nativePromptSyncChain;
 }
 
@@ -928,49 +985,59 @@ function setSaveStatus(message) {
 }
 
 function persistDefinition({announce = false} = {}) {
-    const snapshot = normalizeDefinition(cloneData(currentDefinition));
-    const presetKeyAtRequest = currentPresetKey;
-    const presetNameAtRequest = currentPresetName;
+    if (pendingSave) {
+        pendingSave.presetKey = currentPresetKey;
+        pendingSave.presetName = currentPresetName;
+        pendingSave.announce = pendingSave.announce || announce;
+        return saveChain;
+    }
 
+    pendingSave = {presetKey: currentPresetKey, presetName: currentPresetName, announce};
+    setSaveStatus("저장 중…");
+    saveChain = saveChain.catch(() => undefined).then(flushPendingSave);
+    return saveChain;
+}
+
+async function flushPendingSave() {
+    const request = pendingSave;
+    pendingSave = null;
+    if (!request) return;
+    if (currentPresetKey !== request.presetKey) return;
+
+    const snapshot = normalizeDefinition(cloneData(currentDefinition));
     let payload = "";
     try {
         payload = JSON.stringify(snapshot);
     } catch {
         payload = "";
     }
-    if (payload && payload === lastPersistedPayload && presetKeyAtRequest === lastPersistedKey) {
-        setSaveStatus(`“${presetNameAtRequest}” 프롬프트에 저장됨`);
-        if (announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
-        return saveChain;
+
+    if (payload && payload === lastPersistedPayload && request.presetKey === lastPersistedKey) {
+        setSaveStatus(`“${request.presetName}” 프롬프트에 저장됨`);
+        if (request.announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
+        return;
     }
 
-    setSaveStatus("저장 중…");
-
-    saveChain = saveChain
-        .catch(() => undefined)
-        .then(async () => {
-            const info = getPresetInfo();
-            if (!info || info.key !== presetKeyAtRequest) return;
-            await info.manager.writePresetExtensionField({
-                path: MODULE_NAME,
-                value: snapshot,
-            });
-            lastPersistedPayload = payload;
-            lastPersistedKey = presetKeyAtRequest;
-            if (currentPresetKey === presetKeyAtRequest) {
-                setSaveStatus(`“${presetNameAtRequest}” 프롬프트에 저장됨`);
-                if (announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
-            }
-        })
-        .catch((error) => {
-            lastPersistedPayload = "";
-            lastPersistedKey = "";
-            console.error("[Switch Binder] Could not save preset definition.", error);
-            if (currentPresetKey === presetKeyAtRequest) setSaveStatus("저장 실패");
-            notify("error", "현재 프롬프트에 변수 설정을 저장하지 못했습니다.");
+    try {
+        const info = getPresetInfo();
+        if (!info || info.key !== request.presetKey) return;
+        await info.manager.writePresetExtensionField({
+            path: MODULE_NAME,
+            value: snapshot,
         });
-
-    return saveChain;
+        lastPersistedPayload = payload;
+        lastPersistedKey = request.presetKey;
+        if (currentPresetKey === request.presetKey) {
+            setSaveStatus(`“${request.presetName}” 프롬프트에 저장됨`);
+            if (request.announce) notify("success", "현재 변수 설정을 프롬프트에 저장했습니다.");
+        }
+    } catch (error) {
+        lastPersistedPayload = "";
+        lastPersistedKey = "";
+        console.error("[Switch Binder] Could not save preset definition.", error);
+        if (currentPresetKey === request.presetKey) setSaveStatus("저장 실패");
+        notify("error", "현재 프롬프트에 변수 설정을 저장하지 못했습니다.");
+    }
 }
 
 function validateImportedDefinition(raw) {
@@ -1144,6 +1211,7 @@ async function copyDefinitionToPreset() {
 
 function loadCurrentPreset() {
     activeFavoriteId = '';
+    pendingSave = null;
     lastPersistedPayload = "";
     lastPersistedKey = "";
     const revision = ++loadRevision;
@@ -1506,7 +1574,9 @@ function attachDragReorder(listEl, itemsOrGetter, rowSelector, onReorder) {
 }
 
 function renderSelectionEditor(variable, body) {
-    const section = createEditorSection("fa-list-check", "선택지", `${variable.options.length}개의 값을 구성하고 기본 선택을 지정합니다.`);
+    const describe = () => `${variable.options.length}개의 값을 구성하고 기본 선택을 지정합니다.`;
+    const section = createEditorSection("fa-list-check", "선택지", describe());
+    const sectionDescription = section.querySelector(".sb-card-section-description");
     if (variable.type === "multi") {
         const separatorInput = createTextInput(variable.separator, {placeholder: "\\n"});
         separatorInput.addEventListener("change", () => {
@@ -1519,83 +1589,90 @@ function renderSelectionEditor(variable, body) {
     const list = document.createElement("div");
     list.className = "sb-option-list";
 
-    variable.options.forEach((option, optionIndex) => {
-        const row = document.createElement("div");
-        row.className = "sb-option-row";
-        const labelInput = createTextInput(option.label, {placeholder: `옵션 ${optionIndex + 1}`});
-        labelInput.classList.add("sb-option-label-input");
-        const valueInput = createTextarea(option.value, "이 옵션을 선택했을 때 {{variable}}에 삽입할 내용");
-        valueInput.classList.add("sb-option-value-input");
-        labelInput.addEventListener("change", () => {
-            option.label = labelInput.value.slice(0, 200) || `옵션 ${optionIndex + 1}`;
-            persistDefinition();
-            renderRuntimePanel();
-        });
-        valueInput.addEventListener("change", () => {
-            option.value = valueInput.value.slice(0, 20000);
-            persistDefinition();
-            renderRuntimePanel();
-        });
+    function renderOptionRows() {
+        if (sectionDescription) sectionDescription.textContent = describe();
+        const fragment = document.createDocumentFragment();
 
-        const defaultLabel = document.createElement("label");
-        defaultLabel.className = "sb-default-picker";
-        const defaultInput = document.createElement("input");
-        defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
-        defaultInput.name = `sb-default-${variable.id}`;
-        defaultInput.checked = variable.type === "multi" ? variable.defaultValue.includes(option.id) : variable.defaultValue === option.id;
-        defaultInput.addEventListener("change", () => {
-            if (variable.type === "multi") {
-                const defaults = new Set(variable.defaultValue);
-                defaultInput.checked ? defaults.add(option.id) : defaults.delete(option.id);
-                variable.defaultValue = [...defaults];
-            } else {
-                variable.defaultValue = option.id;
-            }
-            persistDefinition();
-            renderRuntimePanel();
-        });
-        defaultLabel.append(defaultInput, createIcon("fa-star"));
-        const defaultText = document.createElement("span");
-        defaultText.textContent = "기본";
-        defaultLabel.append(defaultText);
-
-        const remove = createActionButton(
-            "삭제",
-            () => {
-                variable.options = variable.options.filter((item) => item.id !== option.id);
-                variable.defaultValue = sanitizeRuntimeValue(variable, variable.defaultValue);
-                renderSettingsEditor();
-                renderRuntimePanel();
+        variable.options.forEach((option, optionIndex) => {
+            const row = document.createElement("div");
+            row.className = "sb-option-row";
+            const labelInput = createTextInput(option.label, {placeholder: `옵션 ${optionIndex + 1}`});
+            labelInput.classList.add("sb-option-label-input");
+            const valueInput = createTextarea(option.value, "이 옵션을 선택했을 때 {{variable}}에 삽입할 내용");
+            valueInput.classList.add("sb-option-value-input");
+            labelInput.addEventListener("change", () => {
+                option.label = labelInput.value.slice(0, 200) || `옵션 ${optionIndex + 1}`;
                 persistDefinition();
-            },
-            "sb-action-danger sb-option-remove",
-            "fa-trash-can",
-        );
-        remove.disabled = variable.options.length <= 1;
+                renderRuntimePanel();
+            });
+            valueInput.addEventListener("change", () => {
+                option.value = valueInput.value.slice(0, 20000);
+                persistDefinition();
+                renderRuntimePanel();
+            });
 
-        const header = document.createElement("div");
-        header.className = "sb-option-row-header";
-        const index = document.createElement("span");
-        index.className = "sb-option-index sb-drag-handle";
-        index.style.touchAction = "none";
-        index.append(createIcon("fa-grip-vertical"));
-        const indexText = document.createElement("span");
-        indexText.textContent = String(optionIndex + 1).padStart(2, "0");
-        index.append(indexText);
-        header.append(index, labelInput, defaultLabel, remove);
+            const defaultLabel = document.createElement("label");
+            defaultLabel.className = "sb-default-picker";
+            const defaultInput = document.createElement("input");
+            defaultInput.type = variable.type === "multi" ? "checkbox" : "radio";
+            defaultInput.name = `sb-default-${variable.id}`;
+            defaultInput.checked = variable.type === "multi" ? variable.defaultValue.includes(option.id) : variable.defaultValue === option.id;
+            defaultInput.addEventListener("change", () => {
+                if (variable.type === "multi") {
+                    const defaults = new Set(variable.defaultValue);
+                    defaultInput.checked ? defaults.add(option.id) : defaults.delete(option.id);
+                    variable.defaultValue = [...defaults];
+                } else {
+                    variable.defaultValue = option.id;
+                }
+                persistDefinition();
+                renderRuntimePanel();
+            });
+            defaultLabel.append(defaultInput, createIcon("fa-star"));
+            const defaultText = document.createElement("span");
+            defaultText.textContent = "기본";
+            defaultLabel.append(defaultText);
 
-        const valueField = document.createElement("div");
-        valueField.className = "sb-option-value-field";
-        const valueIcon = document.createElement("span");
-        valueIcon.className = "sb-option-value-icon";
-        valueIcon.append(createIcon("fa-align-left"));
-        valueField.append(valueIcon, valueInput);
-        row.append(header, valueField);
-        list.append(row);
-    });
+            const remove = createActionButton(
+                "삭제",
+                () => {
+                    variable.options = variable.options.filter((item) => item.id !== option.id);
+                    variable.defaultValue = sanitizeRuntimeValue(variable, variable.defaultValue);
+                    renderOptionRows();
+                    renderRuntimePanel();
+                    persistDefinition();
+                },
+                "sb-action-danger sb-option-remove",
+                "fa-trash-can",
+            );
+            remove.disabled = variable.options.length <= 1;
 
-    attachDragReorder(list, variable.options, ".sb-option-row", () => {
-        renderSettingsEditor();
+            const header = document.createElement("div");
+            header.className = "sb-option-row-header";
+            const index = document.createElement("span");
+            index.className = "sb-option-index sb-drag-handle";
+            index.style.touchAction = "none";
+            index.append(createIcon("fa-grip-vertical"));
+            const indexText = document.createElement("span");
+            indexText.textContent = String(optionIndex + 1).padStart(2, "0");
+            index.append(indexText);
+            header.append(index, labelInput, defaultLabel, remove);
+
+            const valueField = document.createElement("div");
+            valueField.className = "sb-option-value-field";
+            const valueIcon = document.createElement("span");
+            valueIcon.className = "sb-option-value-icon";
+            valueIcon.append(createIcon("fa-align-left"));
+            valueField.append(valueIcon, valueInput);
+            row.append(header, valueField);
+            fragment.append(row);
+        });
+
+        list.replaceChildren(fragment);
+    }
+
+    attachDragReorder(list, () => variable.options, ".sb-option-row", () => {
+        renderOptionRows();
         renderRuntimePanel();
         persistDefinition();
     });
@@ -1610,13 +1687,15 @@ function renderSelectionEditor(variable, body) {
             };
             variable.options.push(option);
             if (!variable.defaultValue && variable.type !== "multi") variable.defaultValue = option.id;
-            renderSettingsEditor();
+            renderOptionRows();
             renderRuntimePanel();
             persistDefinition();
         },
         "sb-action-primary sb-add-option",
         "fa-plus",
     );
+
+    renderOptionRows();
     section.append(list, addOption);
     body.append(section);
 }
@@ -1645,9 +1724,24 @@ function renderPromptToggleEditor(variable, body) {
         variable.promptDefaultValue = normalizeSelectionDefault(variable.type, variable.promptDefaultValue, variable.promptOptions, true);
     }
 
+    const groupBadges = new Map();
+
+    function applyGroupBadge(badge, optionId) {
+        const memberCount = variable.promptGroups.filter((group) => group.optionIds.includes(optionId)).length;
+        badge.className = `sb-prompt-group-badge${memberCount === 0 ? " sb-prompt-group-badge-empty" : ""}`;
+        badge.textContent = memberCount === 0 ? "미배정" : `그룹 ${memberCount}개`;
+        badge.title = memberCount === 0 ? "어느 그룹에도 속하지 않아 항상 OFF로 유지됩니다." : "이 토글이 속한 그룹 수입니다.";
+    }
+
+    function refreshGroupBadge(optionId) {
+        const badge = groupBadges.get(optionId);
+        if (badge?.isConnected) applyGroupBadge(badge, optionId);
+    }
+
     function renderOptionRows() {
         if (sectionDescription) sectionDescription.textContent = describe();
         const catalogById = new Map(getNativePromptCatalog().map((prompt) => [prompt.identifier, prompt]));
+        groupBadges.clear();
         list.replaceChildren();
 
         if (variable.promptOptions.length === 0) {
@@ -1681,22 +1775,63 @@ function renderPromptToggleEditor(variable, body) {
             icon.append(createIcon(prompt?.enabled ? "fa-toggle-on" : "fa-toggle-off"));
             const copy = document.createElement("div");
             copy.className = "sb-prompt-option-copy";
+            const nameRow = document.createElement("div");
+            nameRow.className = "sb-prompt-option-name";
             const name = document.createElement("strong");
-            name.textContent = nativeName;
-            name.title = `실제 토글 이름: ${nativeName}`;
-            const displayLabelInput = createTextInput(option.displayLabel, {
-                placeholder: `표시용 라벨 · ${nativeName}`,
-                className: "sb-editor-input sb-prompt-display-label-input",
-            });
-            displayLabelInput.maxLength = 300;
-            displayLabelInput.setAttribute("aria-label", `${nativeName} 표시용 라벨`);
-            displayLabelInput.title = "런타임 패널에 표시할 이름입니다. 비워두면 실제 토글 이름을 사용합니다.";
-            displayLabelInput.addEventListener("change", () => {
-                option.displayLabel = displayLabelInput.value.slice(0, 300).trim();
-                displayLabelInput.value = option.displayLabel;
-                renderRuntimePanel();
-                persistDefinition();
-            });
+            const applyDisplayLabel = () => {
+                name.textContent = option.displayLabel || nativeName;
+                name.title =
+                    option.displayLabel ?
+                        `표시용 라벨 · 실제 토글 이름: ${nativeName}`
+                    :   `실제 토글 이름: ${nativeName}`;
+                name.classList.toggle("sb-prompt-option-name-custom", Boolean(option.displayLabel));
+            };
+            applyDisplayLabel();
+            const editLabel = document.createElement("button");
+            editLabel.type = "button";
+            editLabel.className = "sb-prompt-label-edit";
+            editLabel.title = "이 패널에서 보여줄 이름을 수정합니다. 실제 토글 이름은 바뀌지 않습니다.";
+            editLabel.setAttribute("aria-label", `${nativeName} 표시용 라벨 수정`);
+            editLabel.append(createIcon("fa-pen"));
+            const beginLabelEdit = () => {
+                const input = createTextInput(option.displayLabel, {
+                    placeholder: nativeName,
+                    className: "sb-editor-input sb-prompt-display-label-input",
+                });
+                input.maxLength = 300;
+                input.setAttribute("aria-label", `${nativeName} 표시용 라벨`);
+                input.title = "비워두면 실제 토글 이름을 사용합니다.";
+                let settled = false;
+                const finish = (save) => {
+                    if (settled) return;
+                    settled = true;
+                    const next = input.value.slice(0, 300).trim();
+                    const changed = save && next !== option.displayLabel;
+                    if (changed) option.displayLabel = next;
+                    applyDisplayLabel();
+                    nameRow.replaceChildren(name, editLabel);
+                    if (changed) {
+                        renderRuntimePanel();
+                        persistDefinition();
+                    }
+                };
+                input.addEventListener("keydown", (event) => {
+                    if (event.key === "Enter") {
+                        event.preventDefault();
+                        finish(true);
+                    } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        finish(false);
+                    }
+                });
+                input.addEventListener("blur", () => finish(true));
+                nameRow.replaceChildren(input);
+                input.focus();
+                input.select();
+            };
+            editLabel.addEventListener("click", beginLabelEdit);
+            name.addEventListener("dblclick", beginLabelEdit);
+            nameRow.append(name, editLabel);
             const meta = document.createElement("span");
             meta.className = "sb-prompt-state-text";
             meta.textContent =
@@ -1705,14 +1840,12 @@ function renderPromptToggleEditor(variable, body) {
                         "현재 ON"
                     :   "현재 OFF"
                 :   "현재 프롬프트에서 찾을 수 없음";
-            copy.append(name, displayLabelInput, meta);
+            copy.append(nameRow, meta);
 
             if (variable.type === "group") {
-                const memberCount = variable.promptGroups.filter((group) => group.optionIds.includes(option.id)).length;
                 const badge = document.createElement("span");
-                badge.className = `sb-prompt-group-badge${memberCount === 0 ? " sb-prompt-group-badge-empty" : ""}`;
-                badge.textContent = memberCount === 0 ? "미배정" : `그룹 ${memberCount}개`;
-                badge.title = memberCount === 0 ? "어느 그룹에도 속하지 않아 항상 OFF로 유지됩니다." : "이 토글이 속한 그룹 수입니다.";
+                applyGroupBadge(badge, option.id);
+                groupBadges.set(option.id, badge);
                 const removeFromGroups = createActionButton(
                     "등록 제거",
                     () => {
@@ -1990,6 +2123,7 @@ function renderPromptToggleEditor(variable, body) {
     groupSection.classList.add("sb-prompt-group-section");
     const groupList = document.createElement("div");
     groupList.className = "sb-prompt-group-list";
+    const expandedGroupIds = new Set();
 
     function renderGroupRows() {
         groupList.replaceChildren();
@@ -2073,40 +2207,83 @@ function renderPromptToggleEditor(variable, body) {
                 "sb-action-danger sb-prompt-option-remove",
                 "fa-trash-can",
             );
-            header.append(handle, labelInput, defaultLabel, remove);
-
+            const membersWrap = document.createElement("div");
+            membersWrap.className = "sb-prompt-group-members-wrap sb-prompt-group-members-idle";
+            membersWrap.id = `sb-group-members-${group.id}`;
             const members = document.createElement("div");
             members.className = "sb-prompt-group-members";
-            if (variable.promptOptions.length === 0) {
-                const hint = document.createElement("div");
-                hint.className = "sb-prompt-group-hint";
-                hint.textContent = "먼저 위에서 토글을 등록하면 여기에 담을 수 있습니다.";
-                members.append(hint);
-            }
-            for (const option of variable.promptOptions) {
-                const member = document.createElement("label");
-                member.className = "sb-prompt-group-member";
-                const checkbox = document.createElement("input");
-                checkbox.type = "checkbox";
-                checkbox.checked = group.optionIds.includes(option.id);
-                checkbox.addEventListener("change", () => {
-                    const membership = new Set(group.optionIds);
-                    checkbox.checked ? membership.add(option.id) : membership.delete(option.id);
-                    group.optionIds = variable.promptOptions.filter((item) => membership.has(item.id)).map((item) => item.id);
-                    member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
-                    renderOptionRows();
-                    renderRuntimePanel();
-                    queueNativePromptSync([variable]);
-                    persistDefinition();
-                });
-                const name = document.createElement("span");
-                name.textContent = getPromptOptionDisplayLabel(option, catalogById);
-                member.append(checkbox, name);
-                member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
-                members.append(member);
-            }
+            membersWrap.append(members);
 
-            row.append(header, members);
+            let membersBuilt = false;
+            const buildMembers = () => {
+                if (membersBuilt) return;
+                membersBuilt = true;
+                if (variable.promptOptions.length === 0) {
+                    const hint = document.createElement("div");
+                    hint.className = "sb-prompt-group-hint";
+                    hint.textContent = "먼저 위에서 토글을 등록하면 여기에 담을 수 있습니다.";
+                    members.append(hint);
+                    return;
+                }
+                const memberFragment = document.createDocumentFragment();
+                for (const option of variable.promptOptions) {
+                    const member = document.createElement("label");
+                    member.className = "sb-prompt-group-member";
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.checked = group.optionIds.includes(option.id);
+                    checkbox.addEventListener("change", () => {
+                        const membership = new Set(group.optionIds);
+                        checkbox.checked ? membership.add(option.id) : membership.delete(option.id);
+                        group.optionIds = variable.promptOptions.filter((item) => membership.has(item.id)).map((item) => item.id);
+                        member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
+                        updateExpandLabel();
+                        refreshGroupBadge(option.id);
+                        renderRuntimePanel();
+                        queueNativePromptSync([variable]);
+                        persistDefinition();
+                    });
+                    const name = document.createElement("span");
+                    name.textContent = getPromptOptionDisplayLabel(option, catalogById);
+                    member.append(checkbox, name);
+                    member.classList.toggle("sb-prompt-group-member-on", checkbox.checked);
+                    memberFragment.append(member);
+                }
+                members.append(memberFragment);
+            };
+
+            const expandButton = document.createElement("button");
+            expandButton.type = "button";
+            expandButton.className = "sb-prompt-group-expand";
+            expandButton.setAttribute("aria-controls", membersWrap.id);
+            const expandCount = document.createElement("span");
+            expandCount.className = "sb-prompt-group-expand-count";
+            expandButton.append(expandCount, createIcon("fa-chevron-down"));
+
+            const updateExpandLabel = () => {
+                expandCount.textContent = `토글 ${group.optionIds.length}`;
+                expandButton.title = expandedGroupIds.has(group.id) ? "담긴 토글 접기" : "담긴 토글 편집";
+            };
+
+            const setExpanded = (expanded) => {
+                if (expanded) {
+                    buildMembers();
+                    expandedGroupIds.add(group.id);
+                } else {
+                    expandedGroupIds.delete(group.id);
+                }
+                membersWrap.classList.toggle("sb-prompt-group-members-idle", !expanded);
+                row.classList.toggle("sb-prompt-group-row-open", expanded);
+                expandButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+                updateExpandLabel();
+            };
+
+            expandButton.addEventListener("click", () => setExpanded(!expandedGroupIds.has(group.id)));
+            setExpanded(expandedGroupIds.has(group.id));
+
+            header.append(handle, labelInput, expandButton, defaultLabel, remove);
+
+            row.append(header, membersWrap);
             fragment.append(row);
         });
 
@@ -2255,30 +2432,40 @@ function renderVariableCard(variable) {
     type.append(typeText);
     const visibility = document.createElement("button");
     visibility.type = "button";
-    visibility.className = `sb-variable-control sb-variable-visibility${variable.runtimeHidden ? " sb-variable-visibility-hidden" : ""}`;
-    visibility.title = variable.runtimeHidden ? "런타임 패널에 표시" : "런타임 패널에서 숨기기";
-    visibility.setAttribute("aria-label", visibility.title);
-    visibility.setAttribute("aria-pressed", variable.runtimeHidden ? "true" : "false");
-    visibility.append(createIcon(variable.runtimeHidden ? "fa-eye-slash" : "fa-eye"));
+    const visibilityIcon = createIcon("fa-eye");
+    visibility.append(visibilityIcon);
+    const applyVisibilityState = () => {
+        visibility.className = `sb-variable-control sb-variable-visibility${variable.runtimeHidden ? " sb-variable-visibility-hidden" : ""}`;
+        visibility.title = variable.runtimeHidden ? "런타임 패널에 표시" : "런타임 패널에서 숨기기";
+        visibility.setAttribute("aria-label", visibility.title);
+        visibility.setAttribute("aria-pressed", variable.runtimeHidden ? "true" : "false");
+        visibilityIcon.classList.toggle("fa-eye-slash", variable.runtimeHidden);
+        visibilityIcon.classList.toggle("fa-eye", !variable.runtimeHidden);
+    };
+    applyVisibilityState();
     visibility.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         variable.runtimeHidden = !variable.runtimeHidden;
-        renderSettingsEditor();
+        applyVisibilityState();
         renderRuntimePanel();
         persistDefinition();
     });
     const pin = document.createElement("button");
     pin.type = "button";
-    pin.className = `sb-variable-control sb-variable-pin${variable.pinned ? " sb-variable-pin-active" : ""}`;
-    pin.title = variable.pinned ? "런타임 상단 고정 해제" : "런타임 상단에 고정";
-    pin.setAttribute("aria-label", pin.title);
-    pin.append(createIcon(variable.pinned ? "fa-thumbtack" : "fa-thumbtack"));
+    pin.append(createIcon("fa-thumbtack"));
+    const applyPinState = () => {
+        pin.className = `sb-variable-control sb-variable-pin${variable.pinned ? " sb-variable-pin-active" : ""}`;
+        pin.title = variable.pinned ? "런타임 상단 고정 해제" : "런타임 상단에 고정";
+        pin.setAttribute("aria-label", pin.title);
+        pin.setAttribute("aria-pressed", variable.pinned ? "true" : "false");
+    };
+    applyPinState();
     pin.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
         variable.pinned = !variable.pinned;
-        renderSettingsEditor();
+        applyPinState();
         renderRuntimePanel();
         persistDefinition();
     });
@@ -3338,7 +3525,7 @@ function initialize() {
     ensureSettingsPlacementObserver();
     ensurePromptCatalogObserver();
     ensureSettingsUI();
-    applyTheme(getStoredTheme());
+    syncThemeWithStTheme({force: true});
 
     const events = getEventTypes();
     bindStEvent(events.PRESET_CHANGED, () => schedulePresetReload(50));
@@ -3355,9 +3542,11 @@ function initialize() {
         refreshOpenPromptInspector();
         if (nativePromptRenderPending) scheduleSettlePromptRender();
     });
+    bindStEvent(events.SETTINGS_UPDATED, () => syncThemeWithStTheme());
     document.addEventListener("pointerdown", handleDocumentPointerDown);
     document.addEventListener("keydown", handleDocumentKeyDown);
     document.addEventListener("click", handlePromptInspectorClick, true);
+    document.addEventListener("change", handleStThemeSelectChange, true);
     window.addEventListener("resize", handleWindowResize);
     window.addEventListener("pagehide", cleanup, {once: true});
     loadCurrentPreset();
@@ -3384,6 +3573,7 @@ function cleanup() {
     suppressCatalogSync = false;
     nativeCatalogCache = null;
     toggleableCatalogCache = null;
+    pendingSave = null;
     lastPersistedPayload = "";
     lastPersistedKey = "";
     clearTimeout(promptCatalogSyncTimer);
@@ -3394,6 +3584,7 @@ function cleanup() {
     document.removeEventListener("pointerdown", handleDocumentPointerDown);
     document.removeEventListener("keydown", handleDocumentKeyDown);
     document.removeEventListener("click", handlePromptInspectorClick, true);
+    document.removeEventListener("change", handleStThemeSelectChange, true);
     window.removeEventListener("resize", handleWindowResize);
     if (resizeFrame) cancelAnimationFrame(resizeFrame);
     resizeFrame = 0;
@@ -3415,6 +3606,7 @@ function cleanup() {
     runtimeButton = null;
     settingsContainer = null;
     inspectedPromptIdentifier = "";
+    activeStThemeName = "";
 }
 
 function boot() {
